@@ -3,7 +3,7 @@ kind: FeatureStore
 metadata:
   name: simple-feast-setup
 spec:
-  feastProject: my_project
+  feastProject: my_test_project
   services:
     offlineStore:
       server: {}

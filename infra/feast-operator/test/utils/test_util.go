@@ -224,7 +224,7 @@ func isFeatureStoreHavingRemoteRegistry(namespace, featureStoreName string) (boo
 	return false, errors.New("timeout waiting for featurestore registry status to be ready")
 }
 
-func validateTheFeatureStoreCustomResource(namespace string, featureStoreName string, feastResourceName string, feastK8sResourceNames []string, timeout time.Duration) {
+func ValidateTheFeatureStoreCustomResource(namespace string, featureStoreName string, feastResourceName string, feastK8sResourceNames []string, timeout time.Duration) {
 	hasRemoteRegistry, err := isFeatureStoreHavingRemoteRegistry(namespace, featureStoreName)
 	Expect(err).ToNot(HaveOccurred(), fmt.Sprintf(
 		"Error occurred while checking FeatureStore %s is having remote registry or not. \nError: %v\n",
@@ -288,18 +288,20 @@ func validateTheFeatureStoreCustomResource(namespace string, featureStoreName st
 func GetTestDeploySimpleCRFunc(testDir string, crYaml string, featureStoreName string, feastResourceName string, feastK8sResourceNames []string) func() {
 	return func() {
 		By("deploying the Simple Feast Custom Resource to Kubernetes")
-		namespace := "default"
+		namespace := "test-ns-feast"
+		CreateNamespace(namespace, testDir)
 
 		cmd := exec.Command("kubectl", "apply", "-f", crYaml, "-n", namespace)
 		_, cmdOutputerr := Run(cmd, testDir)
 		ExpectWithOffset(1, cmdOutputerr).NotTo(HaveOccurred())
 
-		validateTheFeatureStoreCustomResource(namespace, featureStoreName, feastResourceName, feastK8sResourceNames, Timeout)
+		ValidateTheFeatureStoreCustomResource(namespace, featureStoreName, feastResourceName, feastK8sResourceNames, Timeout)
 
 		By("deleting the feast deployment")
 		cmd = exec.Command("kubectl", "delete", "-f", crYaml)
 		_, cmdOutputerr = Run(cmd, testDir)
 		ExpectWithOffset(1, cmdOutputerr).NotTo(HaveOccurred())
+		DeleteNamespace(namespace, testDir)
 	}
 }
 
@@ -307,17 +309,18 @@ func GetTestDeploySimpleCRFunc(testDir string, crYaml string, featureStoreName s
 func GetTestWithRemoteRegistryFunc(testDir string, crYaml string, remoteRegistryCRYaml string, featureStoreName string, feastResourceName string, feastK8sResourceNames []string) func() {
 	return func() {
 		By("deploying the Simple Feast Custom Resource to Kubernetes")
-		namespace := "default"
+		namespace := "test-ns-feast"
+		CreateNamespace(namespace, testDir)
+
 		cmd := exec.Command("kubectl", "apply", "-f", crYaml, "-n", namespace)
 		_, cmdOutputErr := Run(cmd, testDir)
 		ExpectWithOffset(1, cmdOutputErr).NotTo(HaveOccurred())
 
-		validateTheFeatureStoreCustomResource(namespace, featureStoreName, feastResourceName, feastK8sResourceNames, Timeout)
+		ValidateTheFeatureStoreCustomResource(namespace, featureStoreName, feastResourceName, feastK8sResourceNames, Timeout)
 
 		var remoteRegistryNs = "remote-registry"
 		By(fmt.Sprintf("Creating the remote registry namespace=%s", remoteRegistryNs))
-		cmd = exec.Command("kubectl", "create", "ns", remoteRegistryNs)
-		_, _ = Run(cmd, testDir)
+		CreateNamespace(remoteRegistryNs, testDir)
 
 		By("deploying the Simple Feast remote registry Custom Resource on Kubernetes")
 		cmd = exec.Command("kubectl", "apply", "-f", remoteRegistryCRYaml, "-n", remoteRegistryNs)
@@ -326,8 +329,8 @@ func GetTestWithRemoteRegistryFunc(testDir string, crYaml string, remoteRegistry
 
 		remoteFeatureStoreName := "simple-feast-remote-setup"
 		remoteFeastResourceName := FeastPrefix + remoteFeatureStoreName
-		fixRemoteFeastK8sResourceNames(feastK8sResourceNames, remoteFeastResourceName)
-		validateTheFeatureStoreCustomResource(remoteRegistryNs, remoteFeatureStoreName, remoteFeastResourceName, feastK8sResourceNames, Timeout)
+		FixRemoteFeastK8sResourceNames(feastK8sResourceNames, remoteFeastResourceName)
+		ValidateTheFeatureStoreCustomResource(remoteRegistryNs, remoteFeatureStoreName, remoteFeastResourceName, feastK8sResourceNames, Timeout)
 
 		By("deleting the feast remote registry deployment")
 		cmd = exec.Command("kubectl", "delete", "-f", remoteRegistryCRYaml, "-n", remoteRegistryNs)
@@ -338,10 +341,12 @@ func GetTestWithRemoteRegistryFunc(testDir string, crYaml string, remoteRegistry
 		cmd = exec.Command("kubectl", "delete", "-f", crYaml, "-n", namespace)
 		_, cmdOutputErr = Run(cmd, testDir)
 		ExpectWithOffset(1, cmdOutputErr).NotTo(HaveOccurred())
+		DeleteNamespace(remoteRegistryNs, testDir)
+		DeleteNamespace(namespace, testDir)
 	}
 }
 
-func fixRemoteFeastK8sResourceNames(feastK8sResourceNames []string, remoteFeastResourceName string) {
+func FixRemoteFeastK8sResourceNames(feastK8sResourceNames []string, remoteFeastResourceName string) {
 	for i, feastK8sResourceName := range feastK8sResourceNames {
 		if index := strings.LastIndex(feastK8sResourceName, "-"); index != -1 {
 			feastK8sResourceNames[i] = remoteFeastResourceName + feastK8sResourceName[index:]
@@ -445,4 +450,22 @@ func GetSimplePreviousVerCR() string {
 // GetRemoteRegistryPreviousVerCR - Get The previous version remote registry CR for tests
 func GetRemoteRegistryPreviousVerCR() string {
 	return fmt.Sprintf("https://raw.githubusercontent.com/feast-dev/feast/refs/tags/v%s/infra/feast-operator/test/testdata/feast_integration_test_crs/v1alpha1_remote_registry_featurestore.yaml", feastversion.FeastVersion)
+}
+
+func CreateNamespace(namespace string, testDir string) error {
+	cmd := exec.Command("kubectl", "create", "ns", namespace)
+	output, err := Run(cmd, testDir)
+	if err != nil {
+		return fmt.Errorf("failed to create namespace %s: %v\nOutput: %s", namespace, err, output)
+	}
+	return nil
+}
+
+func DeleteNamespace(namespace string, testDir string) error {
+	cmd := exec.Command("kubectl", "delete", "ns", namespace, "--wait=true")
+	output, err := Run(cmd, testDir)
+	if err != nil {
+		return fmt.Errorf("failed to delete namespace %s: %v\nOutput: %s", namespace, err, output)
+	}
+	return nil
 }

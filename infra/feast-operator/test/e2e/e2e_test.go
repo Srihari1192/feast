@@ -22,6 +22,7 @@ import (
 )
 
 var _ = Describe("controller", Ordered, func() {
+
 	featureStoreName := "simple-feast-setup"
 	feastResourceName := utils.FeastPrefix + featureStoreName
 	feastK8sResourceNames := []string{
@@ -39,16 +40,16 @@ var _ = Describe("controller", Ordered, func() {
 		"test/testdata/feast_integration_test_crs/v1alpha1_remote_registry_featurestore.yaml",
 		featureStoreName, feastResourceName, feastK8sResourceNames)
 
-	BeforeAll(func() {
-		utils.DeployOperatorFromCode("/test/e2e", false)
-	})
+	// BeforeAll(func() {
+	// 	utils.DeployOperatorFromCode("/test/e2e", false)
+	// })
 
-	AfterAll(func() {
-		utils.DeleteOperatorDeployment("/test/e2e")
-	})
+	// AfterAll(func() {
+	// 	utils.DeleteOperatorDeployment("/test/e2e")
+	// })
 
 	Context("Operator E2E Tests", func() {
 		It("Should be able to deploy and run a default feature store CR successfully", runTestDeploySimpleCRFunc)
-		It("Should be able to deploy and run a feature store with remote registry CR successfully", runTestWithRemoteRegistryFunction)
+		It("Should be able to deploy and run a feature store with remote TestRemoteRegistryFeastCR CR successfully", runTestWithRemoteRegistryFunction)
 	})
 })
