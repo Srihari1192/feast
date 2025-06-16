@@ -25,7 +25,7 @@ import (
 )
 
 // Run e2e feast Notebook tests using the Ginkgo runner.
-func TestRHOAIE2E(t *testing.T) {
+func TestNotebookRunE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Feast Jupyter Notebook Test suite\n")
 	RunSpecs(t, "e2erhoai Feast Notebook test suite")
