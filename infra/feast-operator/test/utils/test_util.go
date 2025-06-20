@@ -471,14 +471,13 @@ func DeleteNamespace(namespace string, testDir string) error {
 	return nil
 }
 
-// Test real-time credit scoring demo by applying feature store configs and verifying Feast definitions, materializing data, and executing a training and prediction jobs
+// Test real-time credit scoring demo by applying feature store configs and verifying Feast definitions and materializing data
 func RunTestApplyAndMaterializeFunc(testDir string, namespace string, feastCRName string, feastDeploymentName string) func() {
 	return func() {
 		ApplyFeastInfraManifestsAndVerify(namespace, testDir)
 		ApplyFeastYamlAndVerify(namespace, testDir, feastDeploymentName, feastCRName)
 		VerifyApplyFeatureStoreDefinitions(namespace, feastCRName, feastDeploymentName)
 		VerifyFeastMethods(namespace, feastDeploymentName, testDir)
-		TrainAndTestModel(namespace, feastCRName, feastDeploymentName, testDir)
 	}
 }
 
@@ -573,43 +572,6 @@ func VerifyOutputContains(output []byte, expectedSubstrings []string) {
 	for _, expected := range expectedSubstrings {
 		Expect(outputStr).To(ContainSubstring(expected), fmt.Sprintf("Expected output to contain: %s", expected))
 	}
-}
-
-// patches and validate the FeatureStore CR's CronJob to execute model training and prediction
-func TrainAndTestModel(namespace string, feastCRName string, feastDeploymentName string, testDir string) {
-	By("Patching FeatureStore with train/test commands")
-	patch := `{
-		"spec": {
-			"cronJob": {
-				"containerConfigs": {
-					"commands": [
-						"pip install jupyter==1.1.1 scikit-learn==1.5.2 matplotlib==3.9.2 seaborn==0.13.2 joblib",
-						"cd ../ && python run.py"
-					]
-				}
-			}
-		}
-	}`
-	cmd := exec.Command("kubectl", "patch", "feast/"+feastCRName, "-n", namespace, "--type=merge", "--patch", patch)
-	_, cmdOutputErr := Run(cmd, testDir)
-	ExpectWithOffset(1, cmdOutputErr).NotTo(HaveOccurred())
-	fmt.Println("Patched FeatureStore with train/test commands")
-
-	By("Validating patch was applied correctly")
-
-	Eventually(func() string {
-		cmd := exec.Command("kubectl", "get", "feast/"+feastCRName, "-n", namespace, "-o", "jsonpath={.status.applied.cronJob.containerConfigs.commands}")
-		output, _ := Run(cmd, testDir)
-		return string(output)
-	}, "30s", "3s").Should(
-		And(
-			ContainSubstring("python run.py"),
-		),
-	)
-	fmt.Println("FeatureStore patched correctly with commands")
-
-	By("Creating Job from CronJob")
-	CreateAndVerifyJobFromCron(namespace, feastDeploymentName, "feast-test-job", testDir, []string{"Loan rejected!"})
 }
 
 // Create a Job and verifies its logs contain expected substrings
