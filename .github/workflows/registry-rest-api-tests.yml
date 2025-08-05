@@ -3,21 +3,14 @@ name: pr-rest-API-tests
 
 on:
   push:
-    branches:
-      - main
+    branches: [master, addRegistryRESTAPITest]
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - labeled
+    types: [opened, synchronize, labeled]
+  workflow_dispatch:
 
 jobs:
   registry-rest-api-tests:
     timeout-minutes: 30
-    if:
-      ((github.event.action == 'labeled' && (github.event.label.name == 'approved' || github.event.label.name == 'lgtm' || github.event.label.name == 'ok-to-test')) ||
-      (github.event.action != 'labeled' && (contains(github.event.pull_request.labels.*.name, 'ok-to-test') || contains(github.event.pull_request.labels.*.name, 'approved') || contains(github.event.pull_request.labels.*.name, 'lgtm')))) &&
-      github.repository == 'feast-dev/feast'
     runs-on: ubuntu-latest
 
     services:

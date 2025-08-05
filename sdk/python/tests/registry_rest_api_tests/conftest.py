@@ -1,5 +1,5 @@
 import os
-
+import time
 import pytest
 import requests
 from kubernetes import client, config
@@ -10,6 +10,8 @@ from support import (
     create_route,
     delete_namespace,
     deploy_and_validate_pod,
+    execPodCommand,
+    get_pod_name_by_prefix,
     run_kubectl_apply_with_sed,
     run_kubectl_command,
     validate_feature_store_cr_status,
@@ -84,11 +86,24 @@ def feast_rest_client():
             route_url = f"http://{ingress_host}"
 
             # Apply feast projects
+
             output_cs = applyFeastProject(namespace, credit_scoring)
             print(f"Output of feast apply for {credit_scoring}:\n{output_cs}")
 
             output_dr = applyFeastProject(namespace, driver_ranking)
             print(f"Output of feast apply for {driver_ranking}:\n{output_dr}")
+
+            # Create Saved Datasets and Permissions
+            pod_name = get_pod_name_by_prefix(namespace, credit_scoring)
+
+            # Apply datasets
+            execPodCommand(
+                namespace, pod_name, ["python", "create_ui_visible_datasets.py"]
+            )
+
+            # Apply permissions
+            execPodCommand(namespace, pod_name, ["python", "permissions_apply.py"])
+            time.sleep(10) 
 
         else:
             # OpenShift cluster setup using S3-based registry

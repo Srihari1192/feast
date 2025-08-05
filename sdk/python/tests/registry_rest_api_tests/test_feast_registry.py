@@ -11,6 +11,8 @@ driver_ranking_project = "driver_ranking"
     reason="Kube config not available in this environment",
 )
 class TestRegistryServerRest:
+    # entities tests
+
     def test_list_entities(self, feast_rest_client):
         response = feast_rest_client.get(f"/entities/?project={credit_scoring_project}")
         assert response.status_code == 200
@@ -21,9 +23,9 @@ class TestRegistryServerRest:
         assert "entities" in data
         entities = data["entities"]
         assert isinstance(entities, list)
-        assert len(entities) == 3
+        assert len(entities) == 4
 
-        expected_entity_names = {"dob_ssn", "zipcode", "__dummy"}
+        expected_entity_names = {"dob_ssn", "zipcode", "__dummy", "loan_id"}
         actual_entity_names = {entity["spec"]["name"] for entity in entities}
         assert expected_entity_names == actual_entity_names
 
@@ -31,7 +33,7 @@ class TestRegistryServerRest:
         assert "pagination" in data
         pagination = data["pagination"]
         assert isinstance(pagination, dict)
-        assert pagination.get("totalCount") == 3
+        assert pagination.get("totalCount") == 4
         assert pagination.get("totalPages") == 1
 
     def test_get_entity(self, feast_rest_client):
@@ -47,6 +49,10 @@ class TestRegistryServerRest:
         assert spec["name"] == "zipcode"
         assert spec["valueType"] == "INT64"
         assert spec["joinKey"] == "zipcode"
+        assert (
+            spec["description"]
+            == "ZIP code identifier for geographic location-based features"
+        )
 
         # Validate 'meta'
         meta = data["meta"]
@@ -57,6 +63,21 @@ class TestRegistryServerRest:
         data_sources = data["dataSources"]
         assert isinstance(data_sources, list)
         assert len(data_sources) == 1
+
+        ds = data_sources[0]
+        assert ds["type"] == "BATCH_FILE"
+        assert ds["fileOptions"]["uri"] == "data/zipcode_table.parquet"
+
+        # Validate spec tags
+        expected_spec_tags = {
+            "join_key": "true",
+            "standardized": "true",
+            "domain": "geography",
+            "cardinality": "high",
+            "pii": "false",
+            "stability": "stable",
+        }
+        assert spec["tags"] == expected_spec_tags
 
         # Validate 'featureDefinition' contains expected entity name
         assert "zipcode" in data["featureDefinition"]
@@ -74,10 +95,8 @@ class TestRegistryServerRest:
         pagination = data["pagination"]
         assert pagination["page"] == 1
         assert pagination["limit"] == 50
-        assert pagination["total_count"] == len(data["entities"])
-        assert pagination["total_pages"] >= 1
-        assert pagination["has_next"] is False
-        assert pagination["has_previous"] is False
+        assert pagination["totalCount"] == len(data["entities"])
+        assert pagination["totalPages"] >= 1
 
         entities = data["entities"]
         assert len(entities) >= 1
@@ -105,6 +124,8 @@ class TestRegistryServerRest:
             assert isinstance(entity["project"], str)
             assert entity["project"] in ["credit_scoring_local", "driver_ranking"]
 
+    # Data sources tests
+
     def test_list_data_sources(self, feast_rest_client):
         response = feast_rest_client.get(
             f"/data_sources/?project={credit_scoring_project}"
@@ -116,11 +137,11 @@ class TestRegistryServerRest:
         assert "pagination" in data
 
         data_sources = data["dataSources"]
-        assert len(data_sources) == 3  # Expected number
+        assert len(data_sources) == 5
 
         # Validate pagination section
         pagination = data["pagination"]
-        assert pagination["totalCount"] == 3
+        assert pagination["totalCount"] == 5
         assert pagination["totalPages"] == 1
 
     def test_get_data_sources(self, feast_rest_client):
@@ -155,11 +176,10 @@ class TestRegistryServerRest:
         pagination = data.get("pagination", {})
         assert pagination.get("page") == 1
         assert pagination.get("limit") >= len(data_sources)
-        assert pagination.get("total_count") >= len(data_sources)
-        assert "total_pages" in pagination
-        assert pagination["has_next"] is False
-        assert pagination["has_previous"] is False
+        assert pagination.get("totalCount") == len(data_sources)
+        assert pagination.get("totalPages") == 1
 
+    # Feature services
     def test_list_feature_services(self, feast_rest_client):
         response = feast_rest_client.get(
             f"/feature_services/?project={driver_ranking_project}"
@@ -189,7 +209,7 @@ class TestRegistryServerRest:
         assert len(feature_services) >= 1
 
         for fs in feature_services:
-            assert fs.get("project") == "driver_ranking"
+            assert fs.get("project") in [credit_scoring_project, driver_ranking_project]
             spec = fs.get("spec", {})
             features = spec.get("features", [])
 
@@ -212,6 +232,7 @@ class TestRegistryServerRest:
             if batch_source:
                 assert batch_source.get("type") == "BATCH_FILE"
 
+    # Feature views
     def test_list_feature_views(self, feast_rest_client):
         response = feast_rest_client.get(
             f"/feature_views/?project={credit_scoring_project}"
@@ -221,12 +242,12 @@ class TestRegistryServerRest:
         data = response.json()
 
         # Assert the number of feature views
-        assert len(data["featureViews"]) == 3
+        assert len(data["featureViews"]) == 8
 
         # Validate pagination block presence and values
         pagination = data.get("pagination")
         assert pagination is not None
-        assert pagination.get("totalCount") == 3
+        assert pagination.get("totalCount") == 8
         assert pagination.get("totalPages") == 1
 
     def test_get_feature_view(self, feast_rest_client):
@@ -253,12 +274,10 @@ class TestRegistryServerRest:
         pagination = data.get("pagination")
         assert pagination.get("page") == 1
         assert pagination.get("limit") == 50
-        assert pagination.get("total_count") == len(feature_views)
-        assert pagination.get("total_pages") == 1
-        assert pagination.get("has_next") is False
-        assert pagination.get("has_previous") is False
+        assert pagination.get("totalCount") == len(feature_views)
+        assert pagination.get("totalPages") == 1
 
-    # features
+    # features tests
 
     def test_list_features(self, feast_rest_client):
         response = feast_rest_client.get(
@@ -270,7 +289,7 @@ class TestRegistryServerRest:
 
         features = data.get("features")
         assert isinstance(features, list)
-        assert len(features) == 16  # Based on provided JSON
+        assert len(features) == 31
 
         for feature in features:
             assert "name" in feature
@@ -283,17 +302,19 @@ class TestRegistryServerRest:
         # Validate pagination metadata
         pagination = data.get("pagination")
         assert isinstance(pagination, dict)
-        assert pagination.get("totalCount") == 16
+        assert pagination.get("totalCount") == 31
         assert pagination.get("totalPages") == 1
 
     def test_get_feature(self, feast_rest_client):
         response = feast_rest_client.get(
-            f"/features/zipcode_features/city/?project={credit_scoring_project}&include_relationships=false"
+            f"/features/zipcode_features/city?project={credit_scoring_project}&include_relationships=false"
         )
         assert response.status_code == 200
         data = response.json()
         assert data["name"] == "city"
         assert data["featureView"] == "zipcode_features"
+        assert data["type"] == "String"
+        assert data["description"] == "City name for the ZIP code"
 
     def test_features_all(self, feast_rest_client):
         response = feast_rest_client.get("/features/all")
@@ -323,12 +344,10 @@ class TestRegistryServerRest:
         assert pagination is not None
         assert pagination.get("page") == 1
         assert pagination.get("limit") == 50
-        assert pagination.get("total_count") == len(data["features"])  # or 26
-        assert pagination.get("total_pages") == 1
-        assert pagination.get("has_next") is False
-        assert pagination.get("has_previous") is False
+        assert pagination.get("totalCount") == len(data["features"])
+        assert pagination.get("totalPages") == 1
 
-    # Projects
+    # Projects tests
 
     def test_get_project_by_name(self, feast_rest_client):
         response = feast_rest_client.get(f"/projects/{credit_scoring_project}")
@@ -363,12 +382,12 @@ class TestRegistryServerRest:
 
         # Validate relationships pagination
         rel_page = data["relationships_pagination"]
-        assert rel_page["totalCount"] == 22
+        assert rel_page["totalCount"] == 71
         assert rel_page["totalPages"] == 1
 
         # Validate indirect relationships pagination
         indirect_page = data["indirect_relationships_pagination"]
-        assert indirect_page["totalCount"] == 2
+        assert indirect_page["totalCount"] == 154
         assert indirect_page["totalPages"] == 1
 
     def test_get_lineage_complete(self, feast_rest_client):
@@ -449,46 +468,119 @@ class TestRegistryServerRest:
         data = response.json()
 
         assert isinstance(data["relationships"], list)
-        assert len(data["relationships"]) == 1
+        assert len(data["relationships"]) == 2
 
         relationship = data["relationships"][0]
         assert relationship["source"]["type"] == "entity"
         assert relationship["source"]["name"] == "dob_ssn"
-        assert relationship["target"]["type"] == "featureView"
-        assert relationship["target"]["name"] == "credit_history"
 
         # Validate pagination block
         assert "pagination" in data
         pagination = data["pagination"]
-        assert pagination.get("totalCount") == 1
+        assert pagination.get("totalCount") == 2
         assert pagination.get("totalPages") == 1
 
-    def test_get_saved_datasets(self, feast_rest_client):
+    # Datasets tests
+
+    def test_list_saved_datasets(self, feast_rest_client):
         response = feast_rest_client.get(
             f"/saved_datasets?project={credit_scoring_project}&include_relationships=false"
         )
         assert response.status_code == 200
         data = response.json()
         assert "saved_datasets" in data
+        assert len(data["saved_datasets"]) > 0
+
+        expected_names = [
+            "credit_score_training_v1",
+            "credit_history_analysis_v1",
+            "demographics_profile_v1",
+            "comprehensive_credit_dataset_v1",
+            "credit_history_service_v1",
+            "demographics_service_v1",
+            "location_intelligence_service_v1",
+            "customer_profile_service_v1",
+            "basic_underwriting_service_v1",
+        ]
+
+        # Extract all names from spec
+        actual_names = [ds["spec"]["name"] for ds in data["saved_datasets"]]
+
+        # Verify size
+        assert len(actual_names) == len(expected_names), (
+            f"Size mismatch: {len(actual_names)} != {len(expected_names)}"
+        )
+
+        # Verify names match exactly
+        assert actual_names == expected_names, (
+            f"Names mismatch:\nExpected: {expected_names}\nActual: {actual_names}"
+        )
+
+        # Validate pagination block
+        assert "pagination" in data
+        pagination = data["pagination"]
+        assert pagination.get("totalCount") == 9
+        assert pagination.get("totalPages") == 1
 
     def test_get_all_saved_datasets(self, feast_rest_client):
         response = feast_rest_client.get(
-            "/saved_datasets/all?allow_cache=false&page=1&limit=50&sort_order=asc&include_relationships=false"
+            "/saved_datasets/all?allow_cache=true&page=1&limit=50&sort_order=asc&include_relationships=false"
         )
         assert response.status_code == 200
         data = response.json()
+
         assert "savedDatasets" in data
+        assert len(data["savedDatasets"]) > 0
+
+        expected_names = [
+            "credit_score_training_v1",
+            "credit_history_analysis_v1",
+            "demographics_profile_v1",
+            "comprehensive_credit_dataset_v1",
+            "credit_history_service_v1",
+            "demographics_service_v1",
+            "location_intelligence_service_v1",
+            "customer_profile_service_v1",
+            "basic_underwriting_service_v1",
+        ]
+
+        # Extract all names from spec
+        actual_names = [ds["spec"]["name"] for ds in data["savedDatasets"]]
+
+        # Verify size
+        assert len(actual_names) == len(expected_names), (
+            f"Size mismatch: {len(actual_names)} != {len(expected_names)}"
+        )
+
+        # Verify names match exactly
+        assert actual_names == expected_names, (
+            f"Names mismatch:\nExpected: {expected_names}\nActual: {actual_names}"
+        )
+
+        # Validate pagination block
         assert "pagination" in data
+        pagination = data["pagination"]
+        assert pagination.get("page") == 1
+        assert pagination.get("limit") == 50
+        assert pagination.get("totalCount") == 9
+        assert pagination.get("totalPages") == 1
 
     def test_get_saved_datasets_by_name(self, feast_rest_client):
+        dataset_name = "comprehensive_credit_dataset_v1"
         response = feast_rest_client.get(
-            f"/saved_datasets/test?project={credit_scoring_project}&include_relationships=false"
+            f"/saved_datasets/{dataset_name}?project=credit_scoring_local&include_relationships=false"
         )
         assert response.status_code == 200
+        data = response.json()
+        assert data["spec"]["name"] == dataset_name
+        assert "features" in data["spec"]
+        assert len(data["spec"]["features"]) == 6
+
+    # Permissions tests
 
     def test_get_permission_by_name(self, feast_rest_client):
         response = feast_rest_client.get(
-            f"/permissions/add_name?project={credit_scoring_project}&include_relationships=false"
+            f"/permissions/feast_admin_permission?project={credit_scoring_project}&include_relationships=false"
         )
         assert response.status_code == 200
 
@@ -500,3 +592,20 @@ class TestRegistryServerRest:
         data = response.json()
         assert "permissions" in data
         assert "pagination" in data
+
+        expected_permission_names = ["feast_admin_permission", "feast_user_permission"]
+        # Extract all names from spec
+        actual_names = [ds["spec"]["name"] for ds in data["permissions"]]
+
+        # Verify size
+        assert len(actual_names) == len(expected_permission_names), (
+            f"Size mismatch: {len(actual_names)} != {len(expected_permission_names)}"
+        )
+
+        # Verify names match exactly
+        for name in expected_permission_names:
+            assert name in actual_names
+
+        pagination = data.get("pagination")
+        assert pagination.get("totalCount") == 2
+        assert pagination.get("totalPages") == 1

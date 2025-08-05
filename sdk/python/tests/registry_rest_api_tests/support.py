@@ -232,7 +232,13 @@ def get_pod_name_by_prefix(namespace, prefix):
 
 def applyFeastProject(namespace, feast_project):
     pod_name = get_pod_name_by_prefix(namespace, feast_project)
-    apply_args = ["exec", pod_name, "-n", namespace, "--", "feast", "apply"]
-    apply_output = run_kubectl_command(apply_args)
+    apply_output = execPodCommand(namespace, pod_name, ["feast", "apply"])
     print("Output of feast apply:\n", apply_output)
+    return apply_output
+
+
+def execPodCommand(namespace, podName, command_args):
+    apply_args = ["exec", podName, "-n", namespace, "--"] + command_args
+    apply_output = run_kubectl_command(apply_args)
+    print("Output of args apply:\n", apply_output)
     return apply_output
