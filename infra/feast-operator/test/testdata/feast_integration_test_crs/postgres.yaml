@@ -25,7 +25,7 @@ spec:
     spec:
       containers:
         - name: postgres
-          image: 'postgres:16-alpine'
+          image: 'docker.io/library/postgres:16-alpine@sha256:b0f5312476146484c0bd538e77e5f61d1a9cf71c611cd4cb43925ef22fdc2b6d'
           ports:
             - containerPort: 5432
           envFrom:
