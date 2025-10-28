@@ -88,7 +88,7 @@ func MonitorNotebookPod(namespace, podPrefix string, notebookName string) error 
 	fmt.Println("🔄 Waiting for notebook pod to reach Running & Ready state...")
 
 	foundRunningReady := false
-	for i := 0; i < 36; i++ {
+	for i := 0; i < 60; i++ {
 		var err error
 		pod, err = getPodByPrefix(namespace, podPrefix)
 		if err != nil {
