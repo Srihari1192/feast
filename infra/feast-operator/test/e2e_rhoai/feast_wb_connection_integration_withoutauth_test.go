@@ -17,7 +17,7 @@ limitations under the License.
 // Package e2erhoai provides end-to-end (E2E) test coverage for Feast integration with
 // Red Hat OpenShift AI (RHOAI) environments.
 // This specific test validates the functionality
-// of executing a Feast workbench integration connection with kubernetes auth and without auth successfully
+// of executing a Feast workbench integration connection without auth successfully.
 package e2erhoai
 
 import (
@@ -29,14 +29,13 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("Feast Workbench Integration Connection Testing", Ordered, func() {
+var _ = Describe("Feast Workbench Integration Connection Testing - Without Auth", Ordered, func() {
 	const (
 		namespace           = "test-ns-feast"
 		configMapName       = "feast-wb-cm"
 		rolebindingName     = "rb-feast-test"
 		notebookFile        = "test/e2e_rhoai/resources/feast-wb-connection-credit-scoring.ipynb"
 		pvcFile             = "test/e2e_rhoai/resources/pvc.yaml"
-		permissionFile      = "test/e2e_rhoai/resources/permissions.py"
 		notebookPVC         = "jupyterhub-nb-kube-3aadmin-pvc"
 		testDir             = "/test/e2e_rhoai"
 		notebookName        = "feast-wb-connection-credit-scoring.ipynb"
@@ -45,19 +44,14 @@ var _ = Describe("Feast Workbench Integration Connection Testing", Ordered, func
 	)
 
 	// Verify feast ConfigMap
-	verifyFeastConfigMap := func(authEnabled bool) {
+	verifyFeastConfigMap := func() {
 		feastConfigMapName := "jupyter-nb-kube-3aadmin-feast-config"
 		configMapKey := "credit_scoring_local"
 		By(fmt.Sprintf("Listing ConfigMaps and verifying %s exists with correct content", feastConfigMapName))
 
-		// Build expected content based on auth type
 		expectedContent := []string{
 			"project: credit_scoring_local",
-		}
-		if authEnabled {
-			expectedContent = append(expectedContent, "type: kubernetes")
-		} else {
-			expectedContent = append(expectedContent, "type: no_auth")
+			"type: no_auth",
 		}
 
 		// First, list ConfigMaps and check if target ConfigMap exists
@@ -98,20 +92,13 @@ var _ = Describe("Feast Workbench Integration Connection Testing", Ordered, func
 		fmt.Printf("Feast ConfigMap %s verified successfully with project and auth type\n", feastConfigMapName)
 	}
 
-	// Parameterized test function that handles both auth and non-auth scenarios
-	runFeastWorkbenchIntegration := func(authEnabled bool) {
-		// Apply permissions only if auth is enabled
-		if authEnabled {
-			By("Applying Feast permissions for kubernetes authenticated scenario")
-			ApplyFeastPermissions(permissionFile, "/feast-data/credit_scoring_local/feature_repo/permissions.py", namespace, feastDeploymentName)
-		}
-
+	runFeastWorkbenchIntegration := func() {
 		// Create notebook with all setup steps
 		// Pass feastProject parameter to set the opendatahub.io/feast-config annotation
 		CreateNotebookTest(namespace, configMapName, notebookFile, "test/e2e_rhoai/resources/feature_repo", pvcFile, rolebindingName, notebookPVC, notebookName, testDir, "credit_scoring_local")
 
 		// Verify Feast ConfigMap was created with correct auth type
-		verifyFeastConfigMap(authEnabled)
+		verifyFeastConfigMap()
 
 		// Monitor notebook execution
 		MonitorNotebookTest(namespace, notebookName)
@@ -132,37 +119,16 @@ var _ = Describe("Feast Workbench Integration Connection Testing", Ordered, func
 		fmt.Printf("Namespace %s deleted successfully\n", namespace)
 	})
 
-	Context("Feast Workbench Integration Tests - Without Auth", func() {
-		BeforeEach(func() {
-			By("Applying and validating the credit-scoring FeatureStore CR without auth")
-			ApplyFeastYamlAndVerify(namespace, testDir, feastDeploymentName, feastCRName, "test/testdata/feast_integration_test_crs/feast.yaml")
+	It("Should create and run a FeastWorkbenchIntegrationWithoutAuth scenario successfully", func() {
+		By("Applying and validating the credit-scoring FeatureStore CR without auth")
+		ApplyFeastYamlAndVerify(namespace, testDir, feastDeploymentName, feastCRName, "test/testdata/feast_integration_test_crs/feast.yaml")
 
-			By("Verify Feature Store CR is in Ready state")
-			ValidateFeatureStoreCRStatus(namespace, feastCRName)
+		By("Verify Feature Store CR is in Ready state")
+		ValidateFeatureStoreCRStatus(namespace, feastCRName)
 
-			By("Running `feast apply` and `feast materialize-incremental` to validate registry definitions")
-			VerifyApplyFeatureStoreDefinitions(namespace, feastCRName, feastDeploymentName)
-		})
+		By("Running `feast apply` and `feast materialize-incremental` to validate registry definitions")
+		VerifyApplyFeatureStoreDefinitions(namespace, feastCRName, feastDeploymentName)
 
-		It("Should create and run a FeastWorkbenchIntegrationWithoutAuth scenario successfully", func() {
-			runFeastWorkbenchIntegration(false)
-		})
-	})
-
-	Context("Feast Workbench Integration Tests - With Auth", func() {
-		BeforeEach(func() {
-			By("Applying and validating the credit-scoring FeatureStore CR (with auth)")
-			ApplyFeastYamlAndVerify(namespace, testDir, feastDeploymentName, feastCRName, "test/e2e_rhoai/resources/feast_kube_auth.yaml")
-
-			By("Verify Feature Store CR is in Ready state")
-			ValidateFeatureStoreCRStatus(namespace, feastCRName)
-
-			By("Running `feast apply` and `feast materialize-incremental` to validate registry definitions")
-			VerifyApplyFeatureStoreDefinitions(namespace, feastCRName, feastDeploymentName)
-		})
-
-		It("Should create and run a FeastWorkbenchIntegrationWithAuth scenario successfully", func() {
-			runFeastWorkbenchIntegration(true)
-		})
+		runFeastWorkbenchIntegration()
 	})
 })
