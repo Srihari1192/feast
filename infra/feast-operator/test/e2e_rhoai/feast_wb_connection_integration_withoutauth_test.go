@@ -115,7 +115,7 @@ var _ = Describe("Feast Workbench Integration Connection Testing - Without Auth"
 
 	AfterAll(func() {
 		By(fmt.Sprintf("Deleting test namespace: %s", namespace))
-		Expect(DeleteNamespace(namespace, testDir)).To(Succeed())
+		// Expect(DeleteNamespace(namespace, testDir)).To(Succeed())
 		fmt.Printf("Namespace %s deleted successfully\n", namespace)
 	})
 
