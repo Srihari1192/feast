@@ -1,0 +1,64 @@
+---
+# Nightly run: Builds images from master branch and runs comprehensive integration tests.
+# Images tagged: quay.io/opendatahub/odh-feast-operator:odh-master-nightly-run
+#                quay.io/opendatahub/odh-feature-server:odh-master-nightly-run
+#
+# SCHEDULED RUN (Automatic):
+#   - Configure cron schedule in Konflux/PipelinesAsCode
+#   - Runs when event == "schedule"
+#
+# MANUAL TRIGGER (On-demand):
+#   Option 1: kubectl create -f feast-group-test-nightly.yaml
+#   Option 2: tkn pipeline start odh-nightly-test-feast \
+#               --param git-url=https://github.com/feast-dev/feast.git \
+#               --param git-revision=master \
+#               -n open-data-hub-tenant
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    pipelinesascode.tekton.dev/cancel-in-progress: "false"
+    pipelinesascode.tekton.dev/max-keep-runs: "3"
+    # Do not trigger on PR/push; only when explicitly started (e.g. CronJob or manual).
+    pipelinesascode.tekton.dev/on-cel-expression: event == "schedule"
+  name: feast-group-test-nightly
+  namespace: open-data-hub-tenant
+  labels:
+    appstudio.openshift.io/application: group-testing
+    appstudio.openshift.io/component: feast-group
+    pipelines.appstudio.openshift.io/type: test
+spec:
+  params:
+    - name: SNAPSHOT
+      value: ""
+    - name: git-url
+      value: 'https://github.com/feast-dev/feast.git'
+    - name: git-revision
+      value: 'master'
+    - name: oci-artifacts-repo
+      value: 'quay.io/opendatahub/odh-ci-artifacts'
+    - name: artifact-browser-url
+      value: 'https://app-artifact-browser.apps.rosa.konflux-qe.zmr9.p3.openshiftapps.com'
+  pipelineRef:
+    resolver: git
+    params:
+      - name: url
+        value: https://github.com/opendatahub-io/odh-konflux-central.git
+      - name: revision
+        value: main
+      - name: pathInRepo
+        value: integration-tests/feast/feast-nightly-pipeline.yaml
+  taskRunTemplate:
+    podTemplate:
+      nodeSelector:
+        konflux-ci.dev/workload: konflux-tenants
+      tolerations:
+        - effect: NoSchedule
+          key: konflux-ci.dev/workload
+          operator: Equal
+          value: konflux-tenants
+    serviceAccountName: konflux-integration-runner
+  workspaces:
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'
