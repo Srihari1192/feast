@@ -39,13 +39,10 @@ Performance Optimizations:
 - Lazy evaluation with caching
 """
 
-from .ray import (
-    RayDataProcessor,
-    RayOfflineStore,
-    RayOfflineStoreConfig,
-    RayResourceManager,
-    RayRetrievalJob,
-)
+from .config import RayOfflineStoreConfig, RayResourceManager
+from .processor import RayDataProcessor
+from .retrieval_job import RayRetrievalJob
+from .offline_store import RayOfflineStore
 
 __all__ = [
     "RayOfflineStore",
