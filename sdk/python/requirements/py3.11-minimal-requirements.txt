@@ -505,7 +505,7 @@ db-dtypes==1.5.0 \
     # via
     #   google-cloud-bigquery
     #   pandas-gbq
-dill==0.3.9 \
+dill==0.4.1 \
     --hash=sha256:468dff3b89520b474c0397703366b7b95eebe6303f108adf9b19da1f702be87a \
     --hash=sha256:81aa267dddf68cbfe8029c42ca9ec6a4ab3b22371d1c450abc54422577b4512c
     # via feast (pyproject.toml)
