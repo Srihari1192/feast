@@ -40,6 +40,11 @@ spec:
   params:
   - name: group-components
     value: '{ "odh-feast-operator-ci": "opendatahub/feast-operator", "odh-feature-server-ci": "opendatahub/feature-server" }'
+  # Report nightly results as commit status + issue on this repo/branch
+  - name: git-repo
+    value: 'Srihari1192/feast'
+  - name: git-branch
+    value: 'master'
   pipelineRef:
     resolver: git
     params:
