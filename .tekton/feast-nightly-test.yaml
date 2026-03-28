@@ -7,7 +7,7 @@
 # upgrade tests.
 #
 # Triggers:
-#   - Cron: Every day at 2:00 AM UTC
+#   - Cron: Every day at 8:00 AM IST (2:30 AM UTC)
 #   - Comment: /nightly-test on a pull request (manual trigger)
 #
 # Pipeline definition: Srihari1192/odh-konflux-central
@@ -24,8 +24,8 @@ metadata:
     build.appstudio.redhat.com/target_branch: '{{target_branch}}'
     pipelinesascode.tekton.dev/cancel-in-progress: "false"
     pipelinesascode.tekton.dev/max-keep-runs: "5"
-    # Nightly schedule: every day at 2:00 AM UTC
-    pipelinesascode.tekton.dev/on-cron: "0 2 * * *"
+    # Nightly schedule: every day at 8:00 AM IST (2:30 AM UTC)
+    pipelinesascode.tekton.dev/on-cron: "30 2 * * *"
     # Also allow manual trigger via PR comment
     pipelinesascode.tekton.dev/on-comment: "^/nightly-test"
     # Target the master branch

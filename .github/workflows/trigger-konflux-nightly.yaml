@@ -1,0 +1,294 @@
+---
+# Trigger Konflux Nightly Integration Test on demand
+#
+# This workflow creates a PipelineRun on the Konflux cluster to run
+# the full Feast integration test suite (E2E, REST API, upgrade tests)
+# against a specified branch.
+#
+# Usage:
+#   1. Go to Actions → "Trigger Konflux Nightly Test" → Run workflow
+#   2. Select the branch to test (default: master)
+#   3. The workflow triggers the Konflux pipeline and reports status
+#
+# Alternatively, trigger via GitHub CLI:
+#   gh workflow run trigger-konflux-nightly.yaml -f branch=master
+#
+name: Trigger Konflux Nightly Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test against'
+        required: true
+        default: 'master'
+        type: string
+      operator_image:
+        description: 'Feast operator image (leave empty for latest odh-stable)'
+        required: false
+        default: ''
+        type: string
+      server_image:
+        description: 'Feature server image (leave empty for latest odh-stable)'
+        required: false
+        default: ''
+        type: string
+
+env:
+  KONFLUX_NAMESPACE: open-data-hub-tenant
+  PIPELINE_REPO: Srihari1192/odh-konflux-central
+  PIPELINE_BRANCH: feat/feast-nightly-pipeline
+  PIPELINE_PATH: integration-tests/feast/nightly-testing-pipeline.yaml
+
+jobs:
+  trigger-konflux:
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+
+      - name: Get branch HEAD SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Branch: ${{ inputs.branch }}"
+          echo "SHA: ${SHA}"
+
+      - name: Set pending commit status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'pending',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test triggered',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Generate PipelineRun YAML
+        id: generate
+        run: |
+          OPERATOR_IMAGE="${{ inputs.operator_image }}"
+          SERVER_IMAGE="${{ inputs.server_image }}"
+          BRANCH="${{ inputs.branch }}"
+          RUN_NAME="feast-nightly-manual-$(date +%Y%m%d-%H%M%S)"
+
+          # Use defaults if not specified
+          [ -z "$OPERATOR_IMAGE" ] && OPERATOR_IMAGE="quay.io/opendatahub/feast-operator:odh-stable"
+          [ -z "$SERVER_IMAGE" ] && SERVER_IMAGE="quay.io/opendatahub/feature-server:odh-stable"
+
+          echo "run_name=${RUN_NAME}" >> "$GITHUB_OUTPUT"
+
+          cat > /tmp/pipelinerun.yaml <<YAML
+          apiVersion: tekton.dev/v1
+          kind: PipelineRun
+          metadata:
+            generateName: ${RUN_NAME}-
+            namespace: ${KONFLUX_NAMESPACE}
+            labels:
+              appstudio.openshift.io/application: group-testing
+              appstudio.openshift.io/component: feast-nightly
+              pipelines.appstudio.openshift.io/type: test
+              feast.dev/trigger: manual
+              feast.dev/branch: "${BRANCH}"
+          spec:
+            params:
+            - name: group-components
+              value: '{ "odh-feast-operator-ci": "opendatahub/feast-operator", "odh-feature-server-ci": "opendatahub/feature-server" }'
+            - name: git-repo
+              value: '${{ github.repository }}'
+            - name: git-branch
+              value: '${BRANCH}'
+            pipelineRef:
+              resolver: git
+              params:
+              - name: url
+                value: https://github.com/${PIPELINE_REPO}.git
+              - name: revision
+                value: ${PIPELINE_BRANCH}
+              - name: pathInRepo
+                value: ${PIPELINE_PATH}
+            taskRunTemplate:
+              podTemplate:
+                nodeSelector:
+                  konflux-ci.dev/workload: konflux-tenants
+                tolerations:
+                - effect: NoSchedule
+                  key: konflux-ci.dev/workload
+                  operator: Equal
+                  value: konflux-tenants
+              serviceAccountName: konflux-integration-runner
+            workspaces:
+            - name: git-auth
+              secret:
+                secretName: pac-gitauth-secret
+          YAML
+
+          echo "Generated PipelineRun:"
+          cat /tmp/pipelinerun.yaml
+
+      - name: Apply PipelineRun to Konflux cluster
+        id: apply
+        env:
+          KONFLUX_API_URL: ${{ secrets.KONFLUX_API_URL }}
+          KONFLUX_TOKEN: ${{ secrets.KONFLUX_TOKEN }}
+        run: |
+          if [ -z "$KONFLUX_API_URL" ] || [ -z "$KONFLUX_TOKEN" ]; then
+            echo "::warning::KONFLUX_API_URL or KONFLUX_TOKEN not set."
+            echo "::warning::To enable direct cluster apply, add these as repository secrets."
+            echo ""
+            echo "=========================================="
+            echo "  MANUAL APPLY REQUIRED"
+            echo "=========================================="
+            echo ""
+            echo "Copy the PipelineRun YAML below and apply it manually:"
+            echo ""
+            echo "  oc apply -f /tmp/pipelinerun.yaml -n ${KONFLUX_NAMESPACE}"
+            echo ""
+            echo "Or apply from this workflow artifact."
+            echo ""
+            echo "applied=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Logging into Konflux cluster..."
+            oc login --token="${KONFLUX_TOKEN}" --server="${KONFLUX_API_URL}" --insecure-skip-tls-verify=true
+
+            echo "Applying PipelineRun..."
+            RESULT=$(oc apply -f /tmp/pipelinerun.yaml -n ${KONFLUX_NAMESPACE} -o jsonpath='{.metadata.name}')
+            echo "PipelineRun created: ${RESULT}"
+            echo "pipelinerun_name=${RESULT}" >> "$GITHUB_OUTPUT"
+            echo "applied=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload PipelineRun YAML as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipelinerun-yaml
+          path: /tmp/pipelinerun.yaml
+          retention-days: 7
+
+      - name: Wait for PipelineRun completion
+        if: steps.apply.outputs.applied == 'true'
+        env:
+          KONFLUX_API_URL: ${{ secrets.KONFLUX_API_URL }}
+          KONFLUX_TOKEN: ${{ secrets.KONFLUX_TOKEN }}
+        timeout-minutes: 120
+        run: |
+          PR_NAME="${{ steps.apply.outputs.pipelinerun_name }}"
+          echo "Waiting for PipelineRun ${PR_NAME} to complete..."
+
+          while true; do
+            STATUS=$(oc get pipelinerun "${PR_NAME}" -n ${KONFLUX_NAMESPACE} \
+              -o jsonpath='{.status.conditions[0].reason}' 2>/dev/null || echo "Unknown")
+            CONDITION=$(oc get pipelinerun "${PR_NAME}" -n ${KONFLUX_NAMESPACE} \
+              -o jsonpath='{.status.conditions[0].status}' 2>/dev/null || echo "Unknown")
+
+            echo "$(date -u +%H:%M:%S) Status: ${STATUS} (${CONDITION})"
+
+            if [ "$CONDITION" == "True" ] && [ "$STATUS" == "Succeeded" ]; then
+              echo "result=success" >> "$GITHUB_OUTPUT"
+              echo "PipelineRun succeeded!"
+              break
+            elif [ "$CONDITION" == "False" ]; then
+              echo "result=failure" >> "$GITHUB_OUTPUT"
+              echo "PipelineRun failed: ${STATUS}"
+              exit 1
+            fi
+
+            sleep 60
+          done
+
+      - name: Update commit status on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'success',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test passed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Update commit status on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'failure',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            const title = `Nightly test failure: ${date}`;
+            const branch = '${{ inputs.branch }}';
+            const sha = '${{ steps.sha.outputs.sha }}';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`;
+
+            // Check if issue exists for today
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              labels: 'nightly-failure',
+              state: 'open',
+              per_page: 5
+            });
+
+            const existing = issues.data.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.name,
+                issue_number: existing.number,
+                body: `Re-run also failed.\n\n**Branch:** ${branch}\n**Commit:** ${sha}\n**Workflow run:** [View logs](${runUrl})`
+              });
+              console.log(`Added comment to existing issue #${existing.number}`);
+            } else {
+              const result = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.name,
+                title: title,
+                body: `## Nightly Test Failure\n\n**Date:** ${date}\n**Branch:** ${branch}\n**Commit:** ${sha}\n**Triggered by:** Manual (GitHub Actions)\n**Workflow run:** [View logs](${runUrl})\n\nThe Konflux nightly integration test failed. Check the workflow run link above for details.`,
+                labels: ['nightly-failure', 'ci']
+              });
+              console.log(`Created issue #${result.data.number}`);
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Feast Nightly Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ inputs.branch }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ steps.sha.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Operator Image** | \`${{ inputs.operator_image || 'odh-stable (latest)' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Server Image** | \`${{ inputs.server_image || 'odh-stable (latest)' }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Applied to cluster** | \`${{ steps.apply.outputs.applied }}\` |" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.apply.outputs.applied }}" == "true" ]; then
+            echo "| **PipelineRun** | \`${{ steps.apply.outputs.pipelinerun_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
