@@ -44,6 +44,7 @@ jobs:
           echo "SHA: ${SHA}"
 
       - name: Set pending commit status
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -168,6 +169,7 @@ jobs:
 
       - name: Update commit status on success
         if: success()
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -183,6 +185,7 @@ jobs:
 
       - name: Update commit status on failure
         if: failure()
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
@@ -198,6 +201,7 @@ jobs:
 
       - name: Create issue on failure
         if: failure()
+        continue-on-error: true
         uses: actions/github-script@v7
         with:
           script: |
