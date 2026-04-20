@@ -1,0 +1,253 @@
+name: Trigger Konflux Nightly Test
+
+on:
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to test against'
+        required: true
+        default: 'master'
+        type: string
+
+env:
+  KONFLUX_NAMESPACE: open-data-hub-tenant
+  PIPELINE_REPO: opendatahub-io/odh-konflux-central
+  PIPELINE_BRANCH: main
+  PIPELINE_PATH: integration-tests/feast/nightly-testing-pipeline.yaml
+
+jobs:
+  nightly-test:
+    runs-on: ubuntu-latest
+    permissions:
+      statuses: write
+      issues: write
+    steps:
+      - name: Set branch
+        id: config
+        run: |
+          BRANCH="${{ inputs.branch || 'master' }}"
+          echo "branch=${BRANCH}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.config.outputs.branch }}
+
+      - name: Get branch HEAD SHA
+        id: sha
+        run: |
+          SHA=$(git rev-parse HEAD)
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "Branch: ${{ steps.config.outputs.branch }}"
+          echo "SHA: ${SHA}"
+
+      - name: Set pending commit status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'pending',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test triggered',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Login to Konflux cluster
+        id: login
+        env:
+          KONFLUX_API_URL: ${{ secrets.KONFLUX_API_URL }}  # pragma: allowlist secret
+          KONFLUX_TOKEN: ${{ secrets.KONFLUX_TOKEN }}  # pragma: allowlist secret
+        run: |  # pragma: allowlist secret
+          if [ -z "$KONFLUX_API_URL" ] || [ -z "$KONFLUX_TOKEN" ]; then
+            echo "::error::KONFLUX_API_URL or KONFLUX_TOKEN secrets are not configured."
+            exit 1
+          fi
+          echo "Logging into Konflux cluster..."
+          oc login --token="${KONFLUX_TOKEN}" --server="${KONFLUX_API_URL}" --insecure-skip-tls-verify=true  # pragma: allowlist secret
+
+      - name: Generate nightly test PipelineRun
+        id: generate
+        run: |  # pragma: allowlist secret
+          BRANCH="${{ steps.config.outputs.branch }}"
+          RUN_NAME="feast-nightly-$(date +%Y%m%d-%H%M%S)"
+          echo "run_name=${RUN_NAME}" >> "$GITHUB_OUTPUT"
+
+          cat > /tmp/pipelinerun.yaml <<YAML
+          apiVersion: tekton.dev/v1
+          kind: PipelineRun
+          metadata:
+            generateName: ${RUN_NAME}-
+            namespace: ${KONFLUX_NAMESPACE}
+            labels:
+              appstudio.openshift.io/application: group-testing
+              appstudio.openshift.io/component: feast-nightly
+              pipelines.appstudio.openshift.io/type: test
+              feast.dev/trigger: nightly
+              feast.dev/branch: "${BRANCH}"
+          spec:
+            params:
+            - name: group-components
+              value: '{ "odh-feast-operator-ci": "opendatahub/feast-operator", "odh-feature-server-ci": "opendatahub/feature-server" }'
+            - name: git-repo
+              value: '${{ github.repository }}'
+            - name: git-branch
+              value: '${BRANCH}'
+            pipelineRef:
+              resolver: git
+              params:
+              - name: url
+                value: https://github.com/${PIPELINE_REPO}.git
+              - name: revision
+                value: ${PIPELINE_BRANCH}
+              - name: pathInRepo
+                value: ${PIPELINE_PATH}
+            taskRunTemplate:
+              podTemplate:
+                nodeSelector:
+                  konflux-ci.dev/workload: konflux-tenants
+                tolerations:
+                - effect: NoSchedule
+                  key: konflux-ci.dev/workload
+                  operator: Equal
+                  value: konflux-tenants
+              serviceAccountName: konflux-integration-runner
+            workspaces:
+            - name: git-auth
+              secret:  # pragma: allowlist secret
+                secretName: pac-gitauth-secret  # pragma: allowlist secret
+          YAML
+
+          echo "Generated PipelineRun:"
+          cat /tmp/pipelinerun.yaml
+
+      - name: Apply PipelineRun to Konflux cluster
+        id: apply
+        run: |
+          echo "Applying nightly test PipelineRun..."
+          RESULT=$(oc create -f /tmp/pipelinerun.yaml -n ${KONFLUX_NAMESPACE} -o jsonpath='{.metadata.name}')
+          echo "PipelineRun created: ${RESULT}"
+          echo "pipelinerun_name=${RESULT}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload PipelineRun YAML as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipelinerun-yaml
+          path: /tmp/pipelinerun.yaml
+          retention-days: 7
+
+      - name: Wait for PipelineRun completion
+        timeout-minutes: 180
+        run: |
+          PR_NAME="${{ steps.apply.outputs.pipelinerun_name }}"
+          echo "Waiting for PipelineRun ${PR_NAME} to complete..."
+          echo "Pipeline builds images + provisions cluster + runs tests (may take up to 2-3 hours)"
+
+          while true; do
+            STATUS=$(oc get pipelinerun "${PR_NAME}" -n ${KONFLUX_NAMESPACE} \
+              -o jsonpath='{.status.conditions[0].reason}' 2>/dev/null || echo "Unknown")
+            CONDITION=$(oc get pipelinerun "${PR_NAME}" -n ${KONFLUX_NAMESPACE} \
+              -o jsonpath='{.status.conditions[0].status}' 2>/dev/null || echo "Unknown")
+
+            echo "$(date -u +%H:%M:%S) Status: ${STATUS} (${CONDITION})"
+
+            if [ "$CONDITION" == "True" ] && [ "$STATUS" == "Succeeded" ]; then
+              echo "PipelineRun succeeded!"
+              break
+            elif [ "$CONDITION" == "False" ]; then
+              echo "::error::PipelineRun failed: ${STATUS}"
+              exit 1
+            fi
+
+            sleep 60
+          done
+
+      - name: Update commit status on success
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'success',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test passed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Update commit status on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              sha: '${{ steps.sha.outputs.sha }}',
+              state: 'failure',
+              context: 'feast-nightly-test',
+              description: 'Konflux nightly test failed',
+              target_url: `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`
+            });
+
+      - name: Create issue on failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const date = new Date().toISOString().split('T')[0];
+            const title = `Nightly test failure: ${date}`;
+            const branch = '${{ steps.config.outputs.branch }}';
+            const sha = '${{ steps.sha.outputs.sha }}';
+            const runUrl = `https://github.com/${context.repo.owner}/${context.repo.name}/actions/runs/${context.runId}`;
+
+            // Check if issue exists for today
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.name,
+              labels: 'nightly-failure',
+              state: 'open',
+              per_page: 5
+            });
+
+            const existing = issues.data.find(i => i.title === title);
+
+            if (existing) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.name,
+                issue_number: existing.number,
+                body: `Re-run also failed.\n\n**Branch:** ${branch}\n**Commit:** ${sha}\n**Workflow run:** [View logs](${runUrl})`
+              });
+              console.log(`Added comment to existing issue #${existing.number}`);
+            } else {
+              const result = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.name,
+                title: title,
+                body: `## Nightly Test Failure\n\n**Date:** ${date}\n**Branch:** ${branch}\n**Commit:** ${sha}\n**Triggered by:** ${context.eventName === 'schedule' ? 'Scheduled (8 AM UTC)' : 'Manual'}\n**Workflow run:** [View logs](${runUrl})\n\nThe Konflux nightly test failed. Check the workflow run link above for details.`,
+                labels: ['nightly-failure', 'ci']
+              });
+              console.log(`Created issue #${result.data.number}`);
+            }
+
+      - name: Summary
+        if: always()
+        run: |
+          BRANCH="${{ steps.config.outputs.branch }}"
+          echo "## Feast Nightly Test Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Parameter | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | \`${{ github.event_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${BRANCH}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ steps.sha.outputs.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "${{ steps.apply.outputs.pipelinerun_name }}" ]; then
+            echo "| **PipelineRun** | \`${{ steps.apply.outputs.pipelinerun_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          fi
