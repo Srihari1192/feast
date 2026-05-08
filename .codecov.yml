@@ -1,0 +1,37 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...80"
+
+  status:
+    project:
+      default:
+        informational: true
+        target: auto
+        threshold: 1%
+    patch:
+      default:
+        informational: true
+        target: 70%
+
+flags:
+  python-unit:
+    paths:
+      - sdk/python/feast/
+    carryforward: true
+  ui:
+    paths:
+      - ui/src/
+    carryforward: true
+  go-operator:
+    paths:
+      - infra/feast-operator/
+    carryforward: true
+
+comment:
+  layout: "reach,diff,flags,files,footer"
+  behavior: default
+  require_changes: false
