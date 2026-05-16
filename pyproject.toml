@@ -311,3 +311,28 @@ test-ci = { cmd = "python -m pytest -n auto --dist loadgroup --integration sdk/p
 duckdb-tests = ["py310", "duckdb-tests"]
 ray-tests = ["py310", "ray-tests"]
 registration-tests = ["py310", "registration-tests"]
+
+[tool.coverage.run]
+source = ["feast"]
+branch = true
+omit = [
+    "*/tests/*",
+    "*_pb2.py",
+    "*_pb2_grpc.py",
+    "*/embedded_go/*",
+    "*/protos/*",
+]
+
+[tool.coverage.report]
+precision = 2
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "@abstractmethod",
+    "if __name__ == .__main__.:",
+]
+
+[tool.coverage.xml]
+output = "coverage.xml"

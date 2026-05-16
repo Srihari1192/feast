@@ -71,6 +71,15 @@ jobs:
           fi
 
           make test-python-unit
+      - name: Upload Python coverage to Codecov
+        if: matrix.os == 'ubuntu-latest'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.xml
+          flags: python-unit,py${{ matrix.python-version }}
+          fail_ci_if_error: false
+          verbose: true
       - name: Minimize uv cache
         run: uv cache prune --ci
 
@@ -97,4 +106,12 @@ jobs:
         run: yarn build:lib
       - name: Run yarn tests
         working-directory: ./ui
-        run: yarn test --watchAll=false
+        run: yarn test --watchAll=false --coverage --coverageReporters=json --coverageReporters=lcov
+      - name: Upload UI coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./ui/coverage/lcov.info
+          flags: ui
+          fail_ci_if_error: false
+          verbose: true

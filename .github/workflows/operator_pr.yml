@@ -17,5 +17,15 @@ jobs:
           go-version: 1.24.12
       - name: Operator tests
         run: make -C infra/feast-operator test
+        # make test already writes infra/feast-operator/cover.out via:
+        #   go test ... -coverprofile cover.out
+      - name: Upload Operator coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./infra/feast-operator/cover.out
+          flags: go-operator
+          fail_ci_if_error: false
+          verbose: true
       - name: After code formatting, check for uncommitted differences
         run: git diff --exit-code infra/feast-operator
