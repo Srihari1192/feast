@@ -874,7 +874,7 @@ install-feast-locally: ## Install Feast locally
 
 .PHONY: test-go
 test-go: compile-protos-python compile-protos-go install-go-ci-dependencies install-feast-locally  ## Run Go tests
-	CGO_ENABLED=1 go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out -o coverage.html
+	CGO_ENABLED=1 go test -coverprofile=go/coverage.out -covermode=atomic ./go/... && go tool cover -html=go/coverage.out -o go/coverage.html
 
 .PHONY: format-go
 format-go: ## Format Go code

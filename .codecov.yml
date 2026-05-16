@@ -1,0 +1,53 @@
+codecov:
+  require_ci_to_pass: false
+  notify:
+    wait_for_ci: true
+
+coverage:
+  precision: 2
+  round: down
+  range: "60...90"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        if_no_uploads: success
+        if_not_found: success
+    patch:
+      default:
+        target: 70%
+        threshold: 5%
+        if_no_uploads: success
+        if_not_found: success
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: true
+  show_carryforward_flags: true
+
+flags:
+  python-unit:
+    paths:
+      - sdk/python/feast/
+    carryforward: true
+  go-feature-server:
+    paths:
+      - go/
+    carryforward: true
+
+ignore:
+  - "sdk/python/tests/**"
+  - "**/*_pb2.py"
+  - "**/*_pb2_grpc.py"
+  - "sdk/python/feast/protos/**"
+  - "sdk/python/feast/embedded_go/**"
+  - "protos/**"
+  - "docs/**"
+  - "ui/**"
+  - "java/**"
+  - "infra/feast-operator/test/**"
