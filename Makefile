@@ -171,7 +171,16 @@ benchmark-python-local: ## Run integration + benchmark tests for Python (local d
 
 test-python-unit: ## Run Python unit tests (use pattern=<pattern> to filter tests, e.g., pattern=milvus, pattern=test_online_retrieval.py, pattern=test_online_retrieval.py::test_get_online_features_milvus)
 	uv run python -m pytest -n 8 --color=yes $(if $(pattern),-k "$(pattern)") \
+		-m "not slow" \
+		--cov=feast \
+		--cov-report=xml \
+		--cov-report=term-missing \
 		sdk/python/tests/unit
+# Note: -m "not slow" excludes performance benchmarks from the coverage run.
+# pytest-cov instruments all Python code paths via sys.settrace, adding overhead
+# that disproportionately affects pure-Python code vs C-extension paths (e.g.
+# protobuf MessageToDict). This causes timing-sensitive benchmarks to fail their
+# speedup assertions. Performance tests should be run separately without --cov.
 
 # Fast unit tests only
 test-python-unit-fast: ## Run fast unit tests only (no external dependencies)
@@ -875,7 +884,7 @@ install-feast-locally: ## Install Feast locally
 
 .PHONY: test-go
 test-go: compile-protos-python compile-protos-go install-go-ci-dependencies install-feast-locally  ## Run Go tests
-	CGO_ENABLED=1 go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out -o coverage.html
+	CGO_ENABLED=1 go test -coverprofile=go/coverage.out -covermode=atomic ./go/... && go tool cover -html=go/coverage.out -o go/coverage.html
 
 .PHONY: format-go
 format-go: ## Format Go code
