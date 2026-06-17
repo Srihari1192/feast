@@ -735,3 +735,295 @@ func VerifyOnlineFeatureServing(namespace string, feastDeploymentName string, te
 
 	fmt.Printf("VerifyOnlineFeatureServing: online feature serving verified via feast get-online-features\n")
 }
+
+// ---------------------------------------------------------------------------
+// Modular upgrade: spec integrity helpers
+//
+// These functions implement the same two-phase snapshot/compare pattern used
+// by the Trainer upgrade tests (opendatahub-io/distributed-workloads#920):
+//
+//   Pre-upgrade:  store generation + spec JSON + ODH version in a ConfigMap
+//   Post-upgrade: compare current generation; fail if changed and not allowlisted
+// ---------------------------------------------------------------------------
+
+const (
+	upgradeBaselineConfigMap     = "feast-upgrade-baseline"
+	operatorBaselineConfigMap    = "feast-operator-upgrade-baseline"
+	baselineGenerationKey        = "featurestore-generation"
+	baselineSpecKey              = "featurestore-spec"
+	baselineODHVersionKey        = "odh-version"
+	operatorDeploymentGenKey     = "operator-deployment-generation"
+	operatorDeploymentSpecKey    = "operator-deployment-spec"
+	feastOperatorDeploymentName  = "feast-operator-controller-manager"
+	feastOperatorNamespace       = "feast-operator-system"
+)
+
+// StoreFeatureStoreBaseline snapshots the FeatureStore CR generation and spec into a
+// ConfigMap so the post-upgrade test can detect mutations. The ODH version is read from
+// the DSCI status and stored alongside for allowlist version-pair checks.
+func StoreFeatureStoreBaseline(namespace, crName string) {
+	By(fmt.Sprintf("Snapshotting FeatureStore %s/%s baseline for post-upgrade integrity check", namespace, crName))
+
+	genOut, err := exec.Command("kubectl", "get", "feast", crName, "-n", namespace,
+		"-o", "jsonpath={.metadata.generation}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read FeatureStore generation")
+
+	specOut, err := exec.Command("kubectl", "get", "feast", crName, "-n", namespace,
+		"-o", "jsonpath={.spec}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read FeatureStore spec")
+
+	storeBaseline(namespace, upgradeBaselineConfigMap, map[string]string{
+		baselineGenerationKey: strings.TrimSpace(string(genOut)),
+		baselineSpecKey:       strings.TrimSpace(string(specOut)),
+		baselineODHVersionKey: getODHVersionFromDSCI(),
+	})
+
+	fmt.Printf("Stored FeatureStore baseline: generation=%s\n", strings.TrimSpace(string(genOut)))
+}
+
+// VerifyFeatureStoreSpecIntegrity loads the pre-upgrade baseline ConfigMap and compares
+// the FeatureStore CR's current generation against the snapshot. A generation change means
+// the operator mutated the spec during upgrade — only acceptable for known upgrade paths
+// listed in isSpecMutationExpected.
+func VerifyFeatureStoreSpecIntegrity(namespace, crName string) {
+	By(fmt.Sprintf("Verifying FeatureStore %s/%s spec was not mutated during upgrade", namespace, crName))
+
+	cmData := loadBaseline(namespace, upgradeBaselineConfigMap)
+
+	preGen := extractJSONField(cmData, baselineGenerationKey)
+	preSpec := extractJSONField(cmData, baselineSpecKey)
+	preVersion := extractJSONField(cmData, baselineODHVersionKey)
+
+	genOut, err := exec.Command("kubectl", "get", "feast", crName, "-n", namespace,
+		"-o", "jsonpath={.metadata.generation}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read post-upgrade FeatureStore generation")
+	postGen := strings.TrimSpace(string(genOut))
+
+	postVersion := getODHVersionFromDSCI()
+
+	if postGen != preGen {
+		postSpec, _ := exec.Command("kubectl", "get", "feast", crName, "-n", namespace,
+			"-o", "jsonpath={.spec}").CombinedOutput()
+		fmt.Printf("FeatureStore generation changed: %s → %s\n", preGen, postGen)
+		fmt.Printf("Pre-upgrade spec:  %s\n", preSpec)
+		fmt.Printf("Post-upgrade spec: %s\n", strings.TrimSpace(string(postSpec)))
+
+		ExpectWithOffset(1, preVersion).NotTo(BeEmpty(), "Pre-upgrade ODH version missing from baseline ConfigMap")
+		ExpectWithOffset(1, postVersion).NotTo(BeEmpty(), "Post-upgrade ODH version not available from DSCI")
+		ExpectWithOffset(1, isSpecMutationExpected(preVersion, postVersion)).To(BeTrue(),
+			"Unexpected FeatureStore spec mutation for upgrade %s → %s", preVersion, postVersion)
+		fmt.Printf("FeatureStore spec mutation is allowlisted for upgrade %s → %s\n", preVersion, postVersion)
+	} else {
+		fmt.Printf("FeatureStore generation unchanged after upgrade: %s (spec intact)\n", postGen)
+	}
+}
+
+// StoreFeastOperatorDeploymentBaseline snapshots the feast-operator controller-manager
+// Deployment generation and spec so the post-upgrade test can verify the module controller
+// applied an identical spec (no unexpected pod restart due to spec drift).
+func StoreFeastOperatorDeploymentBaseline(namespace string) {
+	By(fmt.Sprintf("Snapshotting feast-operator Deployment %s/%s baseline", feastOperatorNamespace, feastOperatorDeploymentName))
+
+	genOut, err := exec.Command("kubectl", "get", "deployment", feastOperatorDeploymentName,
+		"-n", feastOperatorNamespace,
+		"-o", "jsonpath={.metadata.generation}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read feast-operator Deployment generation")
+
+	specOut, err := exec.Command("kubectl", "get", "deployment", feastOperatorDeploymentName,
+		"-n", feastOperatorNamespace,
+		"-o", "jsonpath={.spec}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read feast-operator Deployment spec")
+
+	storeBaseline(namespace, operatorBaselineConfigMap, map[string]string{
+		operatorDeploymentGenKey:  strings.TrimSpace(string(genOut)),
+		operatorDeploymentSpecKey: strings.TrimSpace(string(specOut)),
+		baselineODHVersionKey:     getODHVersionFromDSCI(),
+	})
+
+	fmt.Printf("Stored feast-operator Deployment baseline: generation=%s\n", strings.TrimSpace(string(genOut)))
+}
+
+// VerifyFeastOperatorDeploymentIntegrity loads the pre-upgrade Deployment baseline and
+// compares the current generation. A generation change means the module controller changed
+// the Deployment spec — this causes a pod restart and a gap in FeatureStore reconciliation.
+// The check is version-aware: if the upgrade path is allowlisted the assertion is skipped.
+func VerifyFeastOperatorDeploymentIntegrity(namespace string) {
+	By(fmt.Sprintf("Verifying feast-operator Deployment %s/%s spec was not changed by module controller",
+		feastOperatorNamespace, feastOperatorDeploymentName))
+
+	cmData := loadBaseline(namespace, operatorBaselineConfigMap)
+
+	preGen := extractJSONField(cmData, operatorDeploymentGenKey)
+	preSpec := extractJSONField(cmData, operatorDeploymentSpecKey)
+	preVersion := extractJSONField(cmData, baselineODHVersionKey)
+
+	genOut, err := exec.Command("kubectl", "get", "deployment", feastOperatorDeploymentName,
+		"-n", feastOperatorNamespace,
+		"-o", "jsonpath={.metadata.generation}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to read post-upgrade feast-operator Deployment generation")
+	postGen := strings.TrimSpace(string(genOut))
+
+	postVersion := getODHVersionFromDSCI()
+
+	if postGen != preGen {
+		postSpec, _ := exec.Command("kubectl", "get", "deployment", feastOperatorDeploymentName,
+			"-n", feastOperatorNamespace,
+			"-o", "jsonpath={.spec}").CombinedOutput()
+		fmt.Printf("feast-operator Deployment generation changed: %s → %s\n", preGen, postGen)
+		fmt.Printf("Pre-upgrade spec:  %s\n", preSpec)
+		fmt.Printf("Post-upgrade spec: %s\n", strings.TrimSpace(string(postSpec)))
+
+		ExpectWithOffset(1, preVersion).NotTo(BeEmpty(), "Pre-upgrade ODH version missing from baseline ConfigMap")
+		ExpectWithOffset(1, postVersion).NotTo(BeEmpty(), "Post-upgrade ODH version not available from DSCI")
+		ExpectWithOffset(1, isSpecMutationExpected(preVersion, postVersion)).To(BeTrue(),
+			"Unexpected feast-operator Deployment spec change for upgrade %s → %s — "+
+				"module controller Helm chart differs from in-tree reconciler; this will cause a pod restart",
+			preVersion, postVersion)
+		fmt.Printf("feast-operator Deployment change is allowlisted for upgrade %s → %s\n", preVersion, postVersion)
+	} else {
+		fmt.Printf("feast-operator Deployment generation unchanged after upgrade: %s (no pod restart)\n", postGen)
+	}
+}
+
+// VerifyNoPodRestarts checks that all pods owned by the given Deployment have zero
+// container restarts. A restart during upgrade indicates the operand was interrupted.
+func VerifyNoPodRestarts(namespace, deploymentName string) {
+	By(fmt.Sprintf("Verifying zero pod restarts for deployment %s/%s", namespace, deploymentName))
+
+	out, err := exec.Command("kubectl", "get", "pods", "-n", namespace,
+		"-l", fmt.Sprintf("app=%s", deploymentName),
+		"-o", "jsonpath={range .items[*]}{.metadata.name}:{range .status.containerStatuses[*]}{.restartCount},{end}|{end}",
+	).CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to list pods for restart check")
+
+	podData := strings.TrimSpace(string(out))
+	if podData == "" {
+		// Fallback: list all pods in namespace and filter by name prefix
+		out, err = exec.Command("kubectl", "get", "pods", "-n", namespace,
+			"-o", "jsonpath={range .items[*]}{.metadata.name}:{range .status.containerStatuses[*]}{.restartCount},{end}|{end}",
+		).CombinedOutput()
+		ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to list pods for restart check (fallback)")
+		podData = strings.TrimSpace(string(out))
+	}
+
+	fmt.Printf("Pod restart data for %s/%s: %s\n", namespace, deploymentName, podData)
+
+	if podData == "" {
+		fmt.Printf("NOTICE: no pods found for deployment %s — skipping restart check\n", deploymentName)
+		return
+	}
+
+	for _, entry := range strings.Split(podData, "|") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		podName, counts := parts[0], parts[1]
+		for _, c := range strings.Split(strings.TrimSuffix(counts, ","), ",") {
+			c = strings.TrimSpace(c)
+			if c == "" {
+				continue
+			}
+			ExpectWithOffset(1, c).To(Equal("0"),
+				fmt.Sprintf("Pod %s has restart count %s — operand was restarted during upgrade", podName, c))
+		}
+		fmt.Printf("Pod %s: zero restarts confirmed\n", podName)
+	}
+}
+
+// storeBaseline writes key/value pairs into a ConfigMap in the given namespace.
+// Deletes any existing ConfigMap with the same name first.
+func storeBaseline(namespace, configMapName string, data map[string]string) {
+	pairs := ""
+	for k, v := range data {
+		pairs += fmt.Sprintf("  %s: %q\n", k, v)
+	}
+	manifest := fmt.Sprintf("apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: %s\n  namespace: %s\ndata:\n%s",
+		configMapName, namespace, pairs)
+
+	_ = exec.Command("kubectl", "delete", "cm", configMapName, "-n", namespace, "--ignore-not-found").Run()
+
+	applyCmd := exec.Command("kubectl", "apply", "-f", "-", "-n", namespace)
+	applyCmd.Stdin = strings.NewReader(manifest)
+	out, err := applyCmd.CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		fmt.Sprintf("Failed to create baseline ConfigMap %s/%s: %s", namespace, configMapName, out))
+	fmt.Printf("Stored upgrade baseline in ConfigMap %s/%s\n", namespace, configMapName)
+}
+
+// loadBaseline reads the data field of a ConfigMap and returns it as a raw JSON string
+// that extractJSONField can parse. Fails the test if the ConfigMap is missing.
+func loadBaseline(namespace, configMapName string) string {
+	out, err := exec.Command("kubectl", "get", "cm", configMapName, "-n", namespace,
+		"-o", "jsonpath={.data}").CombinedOutput()
+	ExpectWithOffset(1, err).NotTo(HaveOccurred(),
+		fmt.Sprintf("Baseline ConfigMap %s/%s not found — pre-upgrade snapshot missing", namespace, configMapName))
+	return string(out)
+}
+
+// getODHVersionFromDSCI reads the ODH/RHOAI version from DSCI status.release.version.
+// Returns empty string on error so callers can decide whether to fail or skip.
+func getODHVersionFromDSCI() string {
+	out, err := exec.Command("kubectl", "get", "dsci", "-A",
+		"-o", "jsonpath={.items[0].status.release.version}").CombinedOutput()
+	if err != nil {
+		fmt.Printf("Warning: could not read ODH version from DSCI: %v\n", err)
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// extractJSONField extracts a string value from kubectl jsonpath={.data} output which looks
+// like map[key:value key2:value2]. This avoids importing encoding/json for a simple lookup.
+func extractJSONField(data, key string) string {
+	// kubectl jsonpath={.data} returns: map[key1:val1 key2:val2]
+	// Find "key:" then grab the value up to the next space or ]
+	search := key + ":"
+	idx := strings.Index(data, search)
+	if idx == -1 {
+		return ""
+	}
+	rest := strings.TrimSpace(data[idx+len(search):])
+	end := strings.IndexAny(rest, " ]")
+	if end == -1 {
+		return rest
+	}
+	return rest[:end]
+}
+
+// isSpecMutationExpected returns true when the upgrade path from→to is a known
+// spec-mutating path. Add entries here when a Feast operator API change deliberately
+// modifies existing CR specs or when the Helm chart intentionally diverges from the
+// in-tree reconciler output for a specific version pair.
+//
+// Example (uncomment when a known mutation is introduced):
+//
+//	{"3.16", "3.17"},  // RHOAIENG-XXXXX: field renamed in modular migration
+func isSpecMutationExpected(fromVersion, toVersion string) bool {
+	knownMutations := [][2]string{
+		// No known spec-mutating upgrade paths yet.
+	}
+	from := majorMinor(fromVersion)
+	to := majorMinor(toVersion)
+	if from == "" || to == "" {
+		return false
+	}
+	for _, pair := range knownMutations {
+		if pair[0] == from && pair[1] == to {
+			return true
+		}
+	}
+	return false
+}
+
+func majorMinor(version string) string {
+	parts := strings.SplitN(version, ".", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	return parts[0] + "." + parts[1]
+}
