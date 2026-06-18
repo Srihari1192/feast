@@ -37,6 +37,7 @@ var _ = Describe("Feast Jupyter Notebook Testing with Ray Offline Store", Ordere
 		notebookFile       = "test/e2e_rhoai/resources/feast-wb-ray-test.ipynb"
 		pvcFile            = "test/e2e_rhoai/resources/pvc.yaml"
 		kueueResourcesFile = "test/e2e_rhoai/resources/kueue_resources_setup.yaml"
+		rayNetworkRbacFile = "test/e2e_rhoai/resources/ray_network_rbac.yaml"
 		notebookPVC        = "jupyterhub-nb-kube-3aadmin-pvc"
 		testDir            = "/test/e2e_rhoai"
 		notebookName       = "feast-wb-ray-test.ipynb"
@@ -51,21 +52,32 @@ var _ = Describe("Feast Jupyter Notebook Testing with Ray Offline Store", Ordere
 		By("Ensuring notebook ServiceAccount exists")
 		Expect(EnsureNotebookServiceAccount(namespace, testDir)).To(Succeed())
 
-		By("Applying Kueue resources setup")
-		// Apply with namespace flag - cluster-scoped resources (ResourceFlavor, ClusterQueue) will be applied at cluster level,
-		// and namespace-scoped resources (LocalQueue, Role, RoleBinding, NetworkPolicies) will be applied in the specified namespace
-		cmd := exec.Command("kubectl", "apply", "-f", kueueResourcesFile, "-n", namespace)
+		By("Applying Ray RBAC and NetworkPolicy resources")
+		cmd := exec.Command("kubectl", "apply", "-f", rayNetworkRbacFile, "-n", namespace)
 		output, err := testutils.Run(cmd, testDir)
-		Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to apply Kueue resources: %v\nOutput: %s", err, output))
-		fmt.Printf("Kueue resources applied successfully\n")
+		Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to apply Ray RBAC/NetworkPolicy resources: %v\nOutput: %s", err, output))
+		fmt.Printf("Ray RBAC and NetworkPolicy resources applied successfully\n")
+
+		By("Applying Kueue queue resources (best-effort)")
+		// Kueue ClusterQueue/LocalQueue admission may fail if the Kueue webhook is not available on the cluster.
+		// The CodeFlare SDK handles missing Kueue gracefully at runtime, so failures here are non-fatal.
+		kueueCmd := exec.Command("kubectl", "apply", "-f", kueueResourcesFile, "-n", namespace)
+		kueueOutput, kueueErr := testutils.Run(kueueCmd, testDir)
+		if kueueErr != nil {
+			fmt.Printf("Warning: Kueue queue resources could not be applied (Kueue webhook may be unavailable): %v\nOutput: %s\n", kueueErr, kueueOutput)
+		} else {
+			fmt.Printf("Kueue queue resources applied successfully\n")
+		}
 	})
 
 	AfterAll(func() {
-		By("Deleting Kueue resources")
-		// Delete with namespace flag - will delete namespace-scoped resources from the namespace
-		// and cluster-scoped resources from the cluster
+		By("Deleting Kueue queue resources")
 		cmd := exec.Command("kubectl", "delete", "-f", kueueResourcesFile, "-n", namespace, "--ignore-not-found=true", "--timeout=60s")
 		_, _ = testutils.Run(cmd, testDir)
+
+		By("Deleting Ray RBAC and NetworkPolicy resources")
+		rbacCmd := exec.Command("kubectl", "delete", "-f", rayNetworkRbacFile, "-n", namespace, "--ignore-not-found=true", "--timeout=60s")
+		_, _ = testutils.Run(rbacCmd, testDir)
 		fmt.Printf("Kueue resources cleanup completed\n")
 
 		By(fmt.Sprintf("Deleting test namespace: %s", namespace))

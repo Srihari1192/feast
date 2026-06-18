@@ -1,0 +1,59 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: raycluster-reader
+rules:
+- apiGroups: ["ray.io"]
+  resources: ["rayclusters"]
+  verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: notebook-sa-raycluster-reader
+subjects:
+- kind: ServiceAccount
+  name: jupyter-nb-kube-3aadmin
+roleRef:
+  kind: Role
+  name: raycluster-reader
+  apiGroup: rbac.authorization.k8s.io
+---
+# Allow notebook pod to reach Ray head client server (10001), dashboard (8265), and GCS (6379).
+# KubeRay labels head pods with ray.io/node-type=head.
+# Notebook pods carry app=jupyter-nb-kube-3aadmin.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-notebook-to-ray-head
+spec:
+  podSelector:
+    matchLabels:
+      ray.io/node-type: head
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          app: jupyter-nb-kube-3aadmin
+    ports:
+    - protocol: TCP
+      port: 10001
+    - protocol: TCP
+      port: 8265
+    - protocol: TCP
+      port: 6379
+---
+# Allow Ray intra-cluster traffic between head and worker pods.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ray-intracluster
+spec:
+  podSelector:
+    matchLabels:
+      ray.io/cluster: feastraytest
+  ingress:
+  - from:
+    - podSelector:
+        matchLabels:
+          ray.io/cluster: feastraytest
