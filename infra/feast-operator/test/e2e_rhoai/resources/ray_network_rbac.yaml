@@ -19,9 +19,10 @@ roleRef:
   name: raycluster-reader
   apiGroup: rbac.authorization.k8s.io
 ---
-# Allow notebook pod to reach Ray head client server (10001), dashboard (8265), and GCS (6379).
+# Allow any pod in the namespace to reach Ray head client server (10001), dashboard (8265), and GCS (6379).
 # KubeRay labels head pods with ray.io/node-type=head.
-# Notebook pods carry app=jupyter-nb-kube-3aadmin.
+# Using podSelector: {} (match all namespace pods) because the Kubeflow notebook controller sets
+# its own labels on StatefulSet pods (e.g. notebook-name:) which may differ from the Notebook CR labels.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -32,9 +33,7 @@ spec:
       ray.io/node-type: head
   ingress:
   - from:
-    - podSelector:
-        matchLabels:
-          app: jupyter-nb-kube-3aadmin
+    - podSelector: {}
     ports:
     - protocol: TCP
       port: 10001
