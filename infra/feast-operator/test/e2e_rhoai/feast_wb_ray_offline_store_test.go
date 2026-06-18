@@ -48,9 +48,12 @@ var _ = Describe("Feast Jupyter Notebook Testing with Ray Offline Store", Ordere
 		Expect(CreateNamespace(namespace, testDir)).To(Succeed())
 		fmt.Printf("Namespace %s created successfully\n", namespace)
 
+		By("Ensuring notebook ServiceAccount exists")
+		Expect(EnsureNotebookServiceAccount(namespace, testDir)).To(Succeed())
+
 		By("Applying Kueue resources setup")
 		// Apply with namespace flag - cluster-scoped resources (ResourceFlavor, ClusterQueue) will be applied at cluster level,
-		// and namespace-scoped resources (LocalQueue) will be applied in the specified namespace
+		// and namespace-scoped resources (LocalQueue, Role, RoleBinding, NetworkPolicies) will be applied in the specified namespace
 		cmd := exec.Command("kubectl", "apply", "-f", kueueResourcesFile, "-n", namespace)
 		output, err := testutils.Run(cmd, testDir)
 		Expect(err).ToNot(HaveOccurred(), fmt.Sprintf("Failed to apply Kueue resources: %v\nOutput: %s", err, output))

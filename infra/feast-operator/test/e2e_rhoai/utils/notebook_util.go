@@ -221,6 +221,26 @@ func GetOCUser(testDir string) string {
 	return strings.TrimSpace(string(output))
 }
 
+// EnsureNotebookServiceAccount creates the notebook ServiceAccount if it does not already exist.
+// The SA name must match serviceAccountName in custom-nb.yaml so the notebook controller
+// can associate the pod correctly. Matches the pattern from opendatahub-io/distributed-workloads.
+func EnsureNotebookServiceAccount(namespace, testDir string) error {
+	const saName = "jupyter-nb-kube-3aadmin"
+	// Check existence first; ignore error (SA not found is expected on first run)
+	checkCmd := exec.Command("kubectl", "get", "sa", saName, "-n", namespace)
+	if _, err := testutils.Run(checkCmd, testDir); err != nil {
+		createCmd := exec.Command("kubectl", "create", "serviceaccount", saName, "-n", namespace)
+		output, err := testutils.Run(createCmd, testDir)
+		if err != nil {
+			return fmt.Errorf("failed to create ServiceAccount %s: %w\nOutput: %s", saName, err, output)
+		}
+		fmt.Printf("ServiceAccount %s created in namespace %s\n", saName, namespace)
+	} else {
+		fmt.Printf("ServiceAccount %s already exists in namespace %s\n", saName, namespace)
+	}
+	return nil
+}
+
 // SetNamespaceContext sets the kubectl namespace context to the specified namespace
 func SetNamespaceContext(namespace, testDir string) error {
 	cmd := exec.Command("kubectl", "config", "set-context", "--current", "--namespace", namespace)
