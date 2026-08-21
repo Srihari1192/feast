@@ -60,11 +60,6 @@ rules:
   - ""
   resources:
   - pods/log
-  verbs:
-  - get
-- apiGroups:
-  - ""
-  resources:
   - secrets
   verbs:
   - get
@@ -170,6 +165,14 @@ rules:
   - list
   - watch
 - apiGroups:
+  - mlflow.opendatahub.io
+  resources:
+  - mlflows
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
   - monitoring.coreos.com
   resources:
   - servicemonitors
@@ -208,6 +211,8 @@ rules:
   - clusterroles
   verbs:
   - create
+  - get
+  - list
 - apiGroups:
   - rbac.authorization.k8s.io
   resourceNames:
