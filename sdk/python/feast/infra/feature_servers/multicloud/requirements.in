@@ -15,7 +15,7 @@
 #   -o requirements-rhai.txt
 #
 # After compile, hashes in requirements-rhai.txt MUST match the RHAI wheel files
-# (build-tagged names like feast-0.65.0-1-py3-none-any.whl). uv --generate-hashes
+# (build-tagged names like feast-0.66.0-1-py3-none-any.whl). uv --generate-hashes
 # currently records hashes that do not match those rebuilds; replace --hash
 # values with the sha256 fragments from:
 #   https://packages.redhat.com/api/pypi/public-rhai/rhoai/3.6-EA1/cpu-ubi9-test/simple/<package>/
@@ -28,7 +28,7 @@
 # Dockerfile uses --force-reinstall to replace with source build.
 # [minimal] extras: aws, gcp, snowflake, redis, go, mysql, postgres-c,
 # opentelemetry, grpcio, k8s, duckdb, mcp, milvus
-feast[minimal] == 0.65.0
+feast[minimal] == 0.66.0
 
 # RHAI pandas 2.2.3 and 2.3.3 wheels segfault in datetime C APIs with
 # every numpy on this index. pandas >= 2.5 is required; RHAI's only

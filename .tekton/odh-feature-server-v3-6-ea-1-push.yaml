@@ -39,9 +39,6 @@ spec:
     value: Dockerfiles/Dockerfile.feature-server.konflux
   - name: path-context
     value: "."
-  - name: build-args
-    value:
-    - BASE_IMAGE=quay.io/aipcc/base-images/cpu-el9.8:3.6.0-ea.1
   - name: hermetic
     value: "true"
   - name: prefetch-input
