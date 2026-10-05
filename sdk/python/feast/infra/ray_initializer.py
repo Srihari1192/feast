@@ -19,8 +19,11 @@ This module combines configuration management and initialization logic for a
 complete, self-contained Ray setup system.
 """
 
+import functools
+import inspect
 import logging
 import os
+import time
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
@@ -913,3 +916,217 @@ def shutdown_ray() -> None:
     _ray_initialized = False
     _ray_wrapper = None
     logger.info("Ray shutdown complete")
+
+
+# Substrings that identify a transient Ray Client ("ray://") connection or
+# data-channel failure, as opposed to a genuine application error raised by
+# the wrapped call itself. These are known fragilities of the legacy Ray
+# Client protocol used by KubeRay/CodeFlare connections, where the
+# connection is otherwise healthy and a reconnect+retry typically succeeds.
+_RAY_DISCONNECT_MARKERS = (
+    "ray client has already been disconnected",
+    "starting ray client server failed",
+    "unrecoverable error in data channel",
+    "queue filler thread failed to join",
+)
+
+
+def _is_ray_disconnect_error(exc: BaseException) -> bool:
+    """Best-effort detection of a transient Ray Client disconnect error."""
+    if not isinstance(exc, (ConnectionError, ConnectionAbortedError)):
+        return False
+
+    message = str(exc).lower()
+    return any(marker in message for marker in _RAY_DISCONNECT_MARKERS)
+
+
+def _reconnect_ray(
+    call_config,
+    attempt_counter: int,
+    max_retries: int,
+    backoff_seconds: float,
+    config_arg: str = "config",
+) -> int:
+    """Tear down and re-establish the Ray connection, retrying the
+    reconnect itself (not just the original call) if it hits the same
+    transient failure -- reconnecting can race against the exact same
+    cluster-proxy startup issue that caused the original disconnect (e.g.
+    "Starting Ray client server failed").
+
+    Returns the updated attempt count. Raises if reconnecting is still
+    failing once the retry budget is exhausted.
+    """
+    while True:
+        try:
+            shutdown_ray()
+        except Exception:
+            logger.debug(
+                "shutdown_ray() raised while recovering from a Ray "
+                "disconnect; continuing with reconnect attempt",
+                exc_info=True,
+            )
+
+        if call_config is None:
+            logger.warning(
+                "Could not locate '%s' to reconnect Ray; proceeding "
+                "without an explicit reconnect",
+                config_arg,
+            )
+            return attempt_counter
+
+        try:
+            ensure_ray_initialized(call_config, force_reinit=True)
+            return attempt_counter
+        except Exception as reconnect_exc:
+            if attempt_counter >= max_retries:
+                logger.error(
+                    "Reconnect to Ray failed and no retries remain: %s",
+                    reconnect_exc,
+                )
+                raise
+            attempt_counter += 1
+            wait = backoff_seconds * attempt_counter
+            logger.warning(
+                "Reconnect to Ray failed (%s); retrying reconnect "
+                "(attempt %d/%d) after %.1fs...",
+                reconnect_exc,
+                attempt_counter,
+                max_retries,
+                wait,
+            )
+            time.sleep(wait)
+
+
+def retry_on_ray_disconnect(
+    max_retries: int = 2,
+    backoff_seconds: float = 2.0,
+    config_arg: str = "config",
+):
+    """Decorator that retries the wrapped function if it fails due to a
+    transient Ray Client disconnect (see `_is_ray_disconnect_error`),
+    reconnecting to the Ray cluster in between attempts.
+
+    This specifically targets the known fragility of the legacy `ray://`
+    client protocol (used by KubeRay/CodeFlare connections): the data
+    channel's background streaming thread can die under load/latency even
+    though the underlying cluster is healthy, leaving the client session
+    permanently "disconnected" for any further calls. A plain retry on the
+    same session does nothing in that case -- the connection itself must be
+    torn down and re-established.
+
+    The wrapped function's argument named `config_arg` (default: "config",
+    matched positionally or by keyword) is passed to
+    `ensure_ray_initialized(config, force_reinit=True)` to reconnect.
+
+    NOTE: this only helps if the wrapped function's own call performs the
+    actual Ray dispatch synchronously. Several Feast Ray APIs instead
+    return a lazy job/dataset object whose real Ray Client traffic doesn't
+    happen until a later call like `.to_df()`/`.to_arrow()` -- for those,
+    use `retry_method_on_ray_disconnect` on the method that actually
+    materializes the result instead (or in addition).
+    """
+
+    def decorator(func):
+        sig = inspect.signature(func)
+
+        def _extract_config(args, kwargs):
+            try:
+                bound = sig.bind_partial(*args, **kwargs)
+                bound.apply_defaults()
+                return bound.arguments.get(config_arg)
+            except TypeError:
+                return None
+
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            attempt = 0
+            while True:
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    if not _is_ray_disconnect_error(exc) or attempt >= max_retries:
+                        raise
+
+                    attempt += 1
+                    wait = backoff_seconds * attempt
+                    logger.warning(
+                        "Ray client disconnected while running %s (%s); "
+                        "reconnecting and retrying (attempt %d/%d) after %.1fs...",
+                        func.__qualname__,
+                        exc,
+                        attempt,
+                        max_retries,
+                        wait,
+                    )
+                    time.sleep(wait)
+
+                    call_config = _extract_config(args, kwargs)
+                    attempt = _reconnect_ray(
+                        call_config, attempt, max_retries, backoff_seconds, config_arg
+                    )
+
+        return wrapper
+
+    return decorator
+
+
+def retry_method_on_ray_disconnect(
+    max_retries: int = 2,
+    backoff_seconds: float = 2.0,
+    config_attr: str = "_config",
+    cache_attrs: tuple = (),
+):
+    """Like `retry_on_ray_disconnect`, but for instance methods whose Ray
+    dispatch is triggered lazily inside the method itself (e.g.
+    `RayRetrievalJob.to_df()`, which materializes a cached Ray Dataset built
+    from an earlier, cheap `get_historical_features()` call).
+
+    Reconnect config is read from `getattr(self, config_attr)` instead of
+    from the call arguments. Before reconnecting, any attribute names in
+    `cache_attrs` are reset to `None` on `self` -- a cached Ray
+    Dataset/DataFrame built against the now-dead Ray session must not be
+    reused after reconnecting, since its underlying object refs are no
+    longer valid; clearing it forces a fresh rebuild against the new
+    session on the next attempt.
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(self, *args, **kwargs):
+            attempt = 0
+            while True:
+                try:
+                    return func(self, *args, **kwargs)
+                except Exception as exc:
+                    if not _is_ray_disconnect_error(exc) or attempt >= max_retries:
+                        raise
+
+                    attempt += 1
+                    wait = backoff_seconds * attempt
+                    logger.warning(
+                        "Ray client disconnected while running %s (%s); "
+                        "reconnecting and retrying (attempt %d/%d) after %.1fs...",
+                        func.__qualname__,
+                        exc,
+                        attempt,
+                        max_retries,
+                        wait,
+                    )
+                    time.sleep(wait)
+
+                    for cache_attr in cache_attrs:
+                        if hasattr(self, cache_attr):
+                            setattr(self, cache_attr, None)
+
+                    call_config = getattr(self, config_attr, None)
+                    attempt = _reconnect_ray(
+                        call_config,
+                        attempt,
+                        max_retries,
+                        backoff_seconds,
+                        config_attr,
+                    )
+
+        return wrapper
+
+    return decorator

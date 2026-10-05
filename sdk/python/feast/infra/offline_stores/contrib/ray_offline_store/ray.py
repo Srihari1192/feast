@@ -41,6 +41,8 @@ from feast.infra.offline_stores.offline_utils import (
 from feast.infra.ray_initializer import (
     ensure_ray_initialized,
     get_ray_wrapper,
+    retry_method_on_ray_disconnect,
+    retry_on_ray_disconnect,
 )
 from feast.infra.ray_shared_utils import (
     _build_required_columns,
@@ -1073,6 +1075,9 @@ class RayRetrievalJob(RetrievalJob):
         """
         return self._get_ray_dataset()
 
+    @retry_method_on_ray_disconnect(
+        cache_attrs=("_cached_dataset", "_cached_df")
+    )
     def to_df(
         self,
         validation_reference: Optional[ValidationReference] = None,
@@ -1111,6 +1116,9 @@ class RayRetrievalJob(RetrievalJob):
                 raise ValueError(f"Data validation failed: {e}")
         return df
 
+    @retry_method_on_ray_disconnect(
+        cache_attrs=("_cached_dataset", "_cached_df")
+    )
     def to_arrow(
         self,
         validation_reference: Optional[ValidationReference] = None,
@@ -2284,6 +2292,7 @@ class RayOfflineStore(OfflineStore):
         return ds
 
     @staticmethod
+    @retry_on_ray_disconnect()
     def get_historical_features(
         config: RepoConfig,
         feature_views: List[FeatureView],
