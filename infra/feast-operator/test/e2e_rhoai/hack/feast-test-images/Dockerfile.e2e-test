@@ -1,0 +1,75 @@
+# syntax=docker/dockerfile:1.7
+# Combined Feast e2e image (module-operator + feast-operator).
+# No Go toolchain needed at test time — binaries are precompiled here.
+#
+# Build contexts (required):
+#   module   = feast-module-operator repo root
+#   operator = feast/infra/feast-operator
+# Default context = this directory (run-combined.sh).
+#
+# Example:
+#   docker buildx build \
+#     --build-context module=../../../path/to/feast-module-operator \
+#     --build-context operator=../../.. \
+#     -t quay.io/feastdev-ci/feast-test-images:feast-3.6 \
+#     -f Dockerfile.e2e-test .
+#
+# Runtime FEAST_TEST:
+#   module-operator | module-upgrade-pre | module-upgrade-post
+#   operator-e2e | operator-e2e-rhoai
+
+FROM golang:1.26 AS module-builder
+WORKDIR /src
+COPY --from=module go.mod go.sum ./
+RUN go mod download
+COPY --from=module . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c -tags=e2e -count=1 -o /feast-e2e.test ./test/e2e/ && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c -tags=e2e -count=1 -o /feast-e2e-upgrade-pre.test ./test/e2e/upgrade/pre/ && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c -tags=e2e -count=1 -o /feast-e2e-upgrade-post.test ./test/e2e/upgrade/post/
+
+FROM golang:1.26 AS operator-builder
+WORKDIR /src
+COPY --from=operator go.mod go.sum ./
+RUN go mod download
+COPY --from=operator . .
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c -count=1 -o /feast-operator-e2e.test ./test/e2e/ && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go test -c -count=1 -o /feast-operator-e2e-rhoai.test ./test/e2e_rhoai/
+
+FROM registry.k8s.io/kubectl:v1.30.14 AS kubectl
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest
+
+COPY --from=kubectl /bin/kubectl /usr/local/bin/kubectl
+
+# Module suite assets + binaries (FindProjectRoot expects go.mod here).
+WORKDIR /feast-module-operator
+COPY --from=module go.mod go.sum ./
+COPY --from=module config/manifests ./config/manifests
+COPY --from=module-builder /feast-e2e.test /usr/local/bin/feast-e2e
+COPY --from=module-builder /feast-e2e-upgrade-pre.test /usr/local/bin/feast-e2e-upgrade-pre
+COPY --from=module-builder /feast-e2e-upgrade-post.test /usr/local/bin/feast-e2e-upgrade-post
+
+# Operator suite assets + binaries (relative test/testdata paths).
+# operator-e2e-rhoai covers feast pre/post upgrade + notebook suites.
+WORKDIR /feast-operator
+COPY --from=operator go.mod go.sum ./
+COPY --from=operator test ./test
+COPY --from=operator-builder /feast-operator-e2e.test /usr/local/bin/feast-operator-e2e
+COPY --from=operator-builder /feast-operator-e2e-rhoai.test /usr/local/bin/feast-operator-e2e-rhoai
+
+COPY run-combined.sh /usr/local/bin/run-test.sh
+RUN chmod +x /usr/local/bin/run-test.sh /usr/local/bin/kubectl \
+    /usr/local/bin/feast-e2e \
+    /usr/local/bin/feast-e2e-upgrade-pre \
+    /usr/local/bin/feast-e2e-upgrade-post \
+    /usr/local/bin/feast-operator-e2e \
+    /usr/local/bin/feast-operator-e2e-rhoai
+
+WORKDIR /
+ENTRYPOINT ["/usr/local/bin/run-test.sh"]
+CMD ["-test.v"]
